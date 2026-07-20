@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.status_label)
 
     def _setup_mapping_dock(self):
-        dock = self.mapping_dock = QDockWidget("매핑 / 커버리지", self)
+        dock = self.mapping_dock = QDockWidget("매핑 목록 / 대응 현황", self)
         dock.setAllowedAreas(
             Qt.DockWidgetArea.BottomDockWidgetArea |
             Qt.DockWidgetArea.RightDockWidgetArea)
@@ -150,7 +150,7 @@ class MainWindow(QMainWindow):
 
         self.bottom_tabs = QTabWidget()
         self.bottom_tabs.addTab(self.mapping_list_panel, "매핑 목록")
-        self.bottom_tabs.addTab(self.coverage_panel, "커버리지 갭")
+        self.bottom_tabs.addTab(self.coverage_panel, "대응 현황")
 
         dock.setWidget(self.bottom_tabs)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
@@ -182,12 +182,13 @@ class MainWindow(QMainWindow):
         self._add_action(edit_menu, "다시 실행", self._redo, "Ctrl+Y")
         edit_menu.addSeparator()
 
-        self.inherit_action = QAction("종속항에 인용항 구성요소 포함", self)
+        self.inherit_action = QAction(
+            "종속항에 인용항 구성요소 함께 넣기", self)
         self.inherit_action.setCheckable(True)
         self.inherit_action.setChecked(True)
         self.inherit_action.setStatusTip(
-            "종속항은 인용항의 모든 구성요소를 포함합니다. "
-            "켜면 대비표·커버리지·내보내기에 인용항 구성요소가 함께 실립니다.")
+            "예: 3항이 1항을 인용하면 3항 대비표에 1항 구성요소도 함께 "
+            "실립니다 (대응 현황·PPTX·Word·Excel 모두 적용).")
         self.inherit_action.toggled.connect(self._toggle_inherit)
         edit_menu.addAction(self.inherit_action)
 
@@ -195,7 +196,8 @@ class MainWindow(QMainWindow):
         self.lint_action.setCheckable(True)
         self.lint_action.setChecked(True)
         self.lint_action.setStatusTip(
-            "내보내기 직전에 미대응 구성요소·빈 논거 등을 검사합니다.")
+            "내보내기 직전에 근거 없는 구성요소·빈 논거 등을 확인해 "
+            "알려줍니다.")
         self.lint_action.toggled.connect(self._toggle_lint)
         edit_menu.addAction(self.lint_action)
 
@@ -220,9 +222,9 @@ class MainWindow(QMainWindow):
         # 보기
         view_menu = mb.addMenu("보기(&V)")
         self.dock_action = self.mapping_dock.toggleViewAction()
-        self.dock_action.setText("매핑 / 커버리지 패널")
+        self.dock_action.setText("매핑 목록 / 대응 현황 패널")
         view_menu.addAction(self.dock_action)
-        self._add_action(view_menu, "커버리지 갭 보기",
+        self._add_action(view_menu, "구성요소별 대응 현황 보기",
                          self._show_coverage_tab)
         view_menu.addSeparator()
         self._add_action(view_menu, "다크모드 전환", self._toggle_theme)
@@ -711,7 +713,7 @@ class MainWindow(QMainWindow):
             self.coverage_panel.set_inherit(on)
         self._refresh_mapping_panel()
         self.status_label.setText(
-            "종속항에 인용항 구성요소를 포함합니다" if on
+            "종속항에 인용항 구성요소를 함께 넣습니다" if on
             else "종속항은 자기 구성요소만 표시합니다")
 
     def _on_panel_inherit(self, on: bool):
@@ -730,7 +732,7 @@ class MainWindow(QMainWindow):
             else "내보내기 전 점검을 건너뜁니다")
 
     def _show_coverage_tab(self):
-        """커버리지 갭 패널을 열고 앞으로 가져온다."""
+        """대응 현황 패널을 열고 앞으로 가져온다."""
         self.mapping_dock.show()
         self.mapping_dock.raise_()
         self.bottom_tabs.setCurrentWidget(self.coverage_panel)
@@ -845,7 +847,22 @@ class MainWindow(QMainWindow):
             "&nbsp;• 보통 <b>독립항</b>에 대해 작성<br><br>"
             "<b>이 앱에서</b><br>"
             "① 자동 분할 → ② 요소 추출/지정 → ③ PDF 대응부분 드래그 매핑 → "
-            "④ 내보내기(PPTX/Excel/Word)"
+            "④ 내보내기(PPTX/Excel/Word)<br><br>"
+            "<b>구성요소별 대응 현황</b> (화면 아래 탭)<br>"
+            "가로줄은 청구항 구성요소, 세로칸은 선행문헌입니다. 둘이 만나는 "
+            "칸에 대응 여부가 색으로 표시되고, <b>빈칸(—)은 아직 근거를 "
+            "찾지 못한 곳</b>입니다. 모든 구성요소에 근거가 있어야 무효/침해가 "
+            "성립하므로(All Elements Rule) 빈칸이 곧 남은 일감입니다.<br>"
+            "칸을 클릭하면 그 근거가 있는 선행문헌 위치로 이동합니다.<br><br>"
+            "<b>종속항에 인용항 구성요소 함께 넣기</b> (편집 메뉴)<br>"
+            "3항이 1항을 인용하면 3항의 권리범위는 "
+            "<i>1항 구성요소 전부 + 3항의 추가 한정</i>입니다. 이 설정을 켜면 "
+            "3항 대비표에 1항 구성요소가 <b>(1항 인용)</b> 표시와 함께 자동으로 "
+            "실리고, 1항에 이미 연결해 둔 근거가 그대로 나타납니다. "
+            "같은 매핑을 두 번 만들 필요가 없습니다.<br><br>"
+            "<b>내보내기 전 점검</b> (편집 메뉴)<br>"
+            "근거 없는 구성요소, 균등론인데 논거가 빈 매핑, 파일이 사라진 "
+            "선행문헌 등을 내보내기 직전에 알려줍니다."
         )
         dlg.setStandardButtons(QMessageBox.StandardButton.Ok)
         dlg.exec()

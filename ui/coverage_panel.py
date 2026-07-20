@@ -1,10 +1,10 @@
-"""커버리지 갭 매트릭스 — 구성요소 × 선행문헌 격자.
+"""대응 현황표 — 구성요소 × 선행문헌 격자.
 
-어느 구성요소가 아직 어떤 문헌으로도 대응되지 않았는지(= 갭) 한눈에 본다.
-All Elements Rule 상 모든 구성요소가 대응돼야 무효/침해가 성립하므로,
+어느 구성요소가 아직 어떤 문헌으로도 대응되지 않았는지 한눈에 본다.
+모든 구성요소가 대응돼야 무효/침해가 성립하므로(All Elements Rule),
 빈칸이 곧 남은 일감이다.
 
-셀을 누르면 해당 매핑 위치로 뷰어가 이동한다(검증용).
+셀을 누르면 해당 매핑 위치로 뷰어가 이동한다(근거 확인용).
 """
 import os
 
@@ -45,7 +45,7 @@ def doc_label(path: str) -> str:
 class CoveragePanel(QWidget):
     """구성요소 × 문헌 커버리지 매트릭스."""
     jump_requested = pyqtSignal(str, int, list)   # doc_path, page, rect
-    inherit_changed = pyqtSignal(bool)            # 상속 표시 on/off
+    inherit_changed = pyqtSignal(bool)   # 인용항 구성요소 함께 보기 on/off
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,22 +58,27 @@ class CoveragePanel(QWidget):
         layout.setSpacing(4)
 
         head = QHBoxLayout()
-        title = QLabel("커버리지 갭")
+        title = QLabel("구성요소별 대응 현황")
         title.setStyleSheet("font-weight: bold;")
+        title.setToolTip(
+            "청구항 구성요소와 선행문헌이 만나는 자리에 대응 여부를 "
+            "표시합니다.\n빈칸은 아직 근거를 찾지 못한 곳입니다.")
         head.addWidget(title)
 
-        self.inherit_check = QCheckBox("종속항에 인용항 구성요소 포함")
+        self.inherit_check = QCheckBox("종속항에 인용항 구성요소 함께 보기")
         self.inherit_check.setChecked(True)
         self.inherit_check.setToolTip(
-            "종속항은 인용항의 모든 구성요소를 포함합니다.\n"
-            "켜두면 인용항 구성요소가 종속항 행에도 나타나고,\n"
-            "독립항에 붙인 매핑이 그대로 표시됩니다 (매핑 복제 없음).")
+            "예: 3항이 1항을 인용하면 3항도 1항 구성요소를 모두 포함합니다.\n"
+            "켜두면 3항 줄에 1항 구성요소가 함께 나오고,\n"
+            "1항에 이미 연결해 둔 근거가 그대로 보입니다.\n"
+            "(매핑을 복사하는 것이 아니라 같이 보여주는 것입니다)")
         self.inherit_check.toggled.connect(self._on_inherit_toggled)
         head.addWidget(self.inherit_check)
 
-        self.gap_only_check = QCheckBox("갭만 보기")
+        self.gap_only_check = QCheckBox("근거 없는 것만 보기")
         self.gap_only_check.setToolTip(
-            "어느 문헌으로도 대응되지 않은 구성요소만 표시합니다")
+            "어느 선행문헌으로도 대응되지 않은 구성요소만 추립니다.\n"
+            "= 앞으로 근거를 찾아야 할 목록")
         self.gap_only_check.stateChanged.connect(self._rebuild)
         head.addWidget(self.gap_only_check)
 
@@ -81,6 +86,13 @@ class CoveragePanel(QWidget):
         self.summary_label = QLabel("")
         head.addWidget(self.summary_label)
         layout.addLayout(head)
+
+        guide = QLabel(
+            "가로줄 = 청구항 구성요소 · 세로칸 = 선행문헌 · "
+            "빈칸(—)은 아직 대응 근거가 없다는 뜻입니다.")
+        guide.setWordWrap(True)
+        guide.setStyleSheet("color: #69737E; font-size: 11px;")
+        layout.addWidget(guide)
 
         self.table = QTableWidget()
         self.table.setFont(QFont("맑은 고딕", 8))
@@ -92,7 +104,11 @@ class CoveragePanel(QWidget):
         self.table.cellClicked.connect(self._on_cell_clicked)
         layout.addWidget(self.table, stretch=1)
 
-        hint = QLabel("셀을 클릭하면 해당 매핑 위치로 이동합니다")
+        hint = QLabel(
+            "칸을 클릭하면 그 근거가 있는 선행문헌 위치로 이동합니다  ·  "
+            "칸 색: 일치(초록) / 부분일치(노랑) / 불일치(빨강) / "
+            "미판단(회색) / 근거 없음(연분홍)")
+        hint.setWordWrap(True)
         hint.setStyleSheet("color: #98A2AD; font-size: 10px;")
         layout.addWidget(hint)
 
@@ -117,9 +133,9 @@ class CoveragePanel(QWidget):
         self._rebuild()
 
     def _rows(self) -> list:
-        """(claim, ScopeElement) 목록 — '갭만 보기'면 미대응 구성요소만.
+        """(claim, ScopeElement) 목록 — '근거 없는 것만 보기'면 미대응만.
 
-        종속항은 인용항 구성요소까지 함께 보여준다(상속). 매핑을 복제하지
+        종속항은 인용항 구성요소까지 함께 보여준다. 매핑을 복제하지
         않으므로 독립항에 붙인 근거가 종속항 행에도 그대로 나타난다.
         """
         mapped = {m.element_id for m in self._mappings if m.element_id}
@@ -156,12 +172,14 @@ class CoveragePanel(QWidget):
             total_elems += 1
             label = f"청구항 {claim.claim_number}  {elem.element_id}"
             if item_scope.inherited:
-                label += f"  ← {item_scope.source_claim}항"
+                label += f"  ({item_scope.source_claim}항 인용)"
             head = QTableWidgetItem(label)
             tip = elem.text
             if item_scope.inherited:
-                tip = (f"[{item_scope.source_claim}항에서 상속]\n"
-                       f"종속항은 인용항 구성요소를 모두 포함합니다.\n\n{tip}")
+                src = item_scope.source_claim
+                tip = (f"[{src}항에서 가져온 구성요소]\n"
+                       f"이 청구항은 {src}항을 인용하므로 {src}항 "
+                       f"구성요소도 함께 대비해야 합니다.\n\n{tip}")
             head.setToolTip(tip)
             rgb = tuple(elem.color_rgb)
             head.setForeground(QBrush(QColor(*rgb)))
@@ -191,7 +209,7 @@ class CoveragePanel(QWidget):
                 else:
                     bg, fg = _GAP_BG, _GAP_FG
                     item.setText("—")
-                    item.setToolTip("대응 없음")
+                    item.setToolTip("아직 이 문헌에서 대응 근거를 찾지 못했습니다")
                 item.setBackground(QBrush(QColor(bg)))
                 item.setForeground(QBrush(QColor(fg)))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -208,16 +226,17 @@ class CoveragePanel(QWidget):
             header.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
 
         if not self._docs:
-            self.summary_label.setText("선행문헌을 열고 매핑을 추가해 주세요")
+            self.summary_label.setText(
+                "선행문헌을 열고 대응 부분을 연결해 주세요")
             self.summary_label.setStyleSheet("color: #98A2AD;")
         elif gap_elems:
             self.summary_label.setText(
-                f"미대응 구성요소 {gap_elems} / {total_elems}개")
+                f"근거 없는 구성요소 {gap_elems} / {total_elems}개")
             self.summary_label.setStyleSheet(
                 "color: #B4443F; font-weight: bold;")
         else:
             self.summary_label.setText(
-                f"전체 대응 완료 ({total_elems}개)")
+                f"모든 구성요소에 근거 있음 ({total_elems}개)")
             self.summary_label.setStyleSheet(
                 "color: #1B683E; font-weight: bold;")
 
