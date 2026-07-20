@@ -17,6 +17,7 @@ from ui.claim_editor import ClaimEditorPanel
 from ui.pdf_viewer import PDFViewerPanel
 from ui.case_info_panel import CaseInfoPanel
 from ui.mapping_widget import MappingDialog, MappingListPanel
+from ui.coverage_panel import CoveragePanel
 from utils.errlog import log_exception
 
 
@@ -133,17 +134,26 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.status_label)
 
     def _setup_mapping_dock(self):
-        dock = QDockWidget("매핑 목록", self)
+        dock = QDockWidget("매핑 / 커버리지", self)
         dock.setAllowedAreas(
             Qt.DockWidgetArea.BottomDockWidgetArea |
             Qt.DockWidgetArea.RightDockWidgetArea)
+
         self.mapping_list_panel = MappingListPanel()
         self.mapping_list_panel.delete_requested.connect(self._delete_mapping)
         self.mapping_list_panel.edit_requested.connect(self._edit_mapping)
         self.mapping_list_panel.jump_requested.connect(self._jump_to_mapping)
-        dock.setWidget(self.mapping_list_panel)
+
+        self.coverage_panel = CoveragePanel()
+        self.coverage_panel.jump_requested.connect(self._jump_to_mapping)
+
+        self.bottom_tabs = QTabWidget()
+        self.bottom_tabs.addTab(self.mapping_list_panel, "매핑 목록")
+        self.bottom_tabs.addTab(self.coverage_panel, "커버리지 갭")
+
+        dock.setWidget(self.bottom_tabs)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
-        dock.setMaximumHeight(180)
+        dock.setMaximumHeight(240)
 
     # ---------------------------------------------------------------- Menu
 
@@ -271,6 +281,9 @@ class MainWindow(QMainWindow):
         claim_num = current_claim.claim_number if current_claim else 0
         ratio = self._engine.completion_ratio(claim_num)
         self.mapping_list_panel.refresh(self._pm.data.mappings, ratio)
+        self.coverage_panel.refresh(self.claim_editor.get_claims(),
+                                    self._pm.data.mappings,
+                                    self.pdf_viewer.get_open_paths())
         # 구성요소/용어 색상 맵 생성
         element_colors = {}
         for claim in self._pm.data.claims:
@@ -496,16 +509,20 @@ class MainWindow(QMainWindow):
         return result.get("term_id", "")
 
     def _jump_to_mapping(self, doc_path: str, page: int, rect: list):
+        """매핑 목록·커버리지 격자에서 해당 근거 위치로 이동한다."""
+        if not doc_path or not os.path.exists(doc_path):
+            self.status_label.setText(
+                f"문서를 찾을 수 없습니다: {os.path.basename(doc_path or '')}")
+            return
         self.pdf_viewer.open_document(doc_path)
-        # 해당 뷰어로 페이지 이동 (viewer에 public api 추가 필요)
-        viewer = self.pdf_viewer._viewers.get(doc_path)
+        viewer = self.pdf_viewer.viewer_for(doc_path)
         if not viewer:
             return
         if hasattr(viewer, "goto_offset"):   # 텍스트 문서: rect = 문자 오프셋
             r = list(rect or [0, 0, 0, 0])
             viewer.goto_offset(int(r[0]), int(r[1]))
         else:
-            viewer._goto_page(page)
+            viewer.goto_rect(page, rect)
 
     # ------------------------------------------ Project CRUD
 
@@ -598,6 +615,8 @@ class MainWindow(QMainWindow):
     def _export_pptx(self, template_type: str):
         from utils.export_pptx import export_pptx
         self._sync_data_from_ui()
+        if not self._lint_gate("PPTX"):
+            return
         path, _ = QFileDialog.getSaveFileName(
             self, f"PPTX 내보내기 (Type {template_type})", "",
             "PowerPoint 파일 (*.pptx)")
@@ -612,6 +631,8 @@ class MainWindow(QMainWindow):
     def _export_excel(self):
         from utils.export_excel import export_excel
         self._sync_data_from_ui()
+        if not self._lint_gate("Excel"):
+            return
         path, _ = QFileDialog.getSaveFileName(
             self, "Excel 내보내기", "", "Excel 파일 (*.xlsx)")
         if path:
@@ -623,6 +644,8 @@ class MainWindow(QMainWindow):
     def _export_word(self):
         from utils.export_word import export_word
         self._sync_data_from_ui()
+        if not self._lint_gate("Word"):
+            return
         path, _ = QFileDialog.getSaveFileName(
             self, "Word 내보내기", "", "Word 파일 (*.docx)")
         if path:
@@ -648,6 +671,25 @@ class MainWindow(QMainWindow):
         # 그래도 못 찾으면 타임스탬프
         import time
         return f"{base} {int(time.time())}{ext}"
+
+    def _lint_gate(self, target: str) -> bool:
+        """내보내기 전 점검. 계속 진행하면 True."""
+        if getattr(self, "_skip_lint", False):
+            return True
+        try:
+            from core.export_lint import lint_project
+            from ui.lint_dialog import LintDialog
+            issues = lint_project(self._pm.data)
+        except Exception as e:      # 점검 자체가 내보내기를 막으면 안 된다
+            log_exception(e)
+            return True
+        if not issues:
+            return True
+        dlg = LintDialog(issues, target, parent=self)
+        proceed = dlg.exec() == LintDialog.DialogCode.Accepted
+        if proceed and dlg.skip_future():
+            self._skip_lint = True
+        return proceed
 
     def _run_export(self, kind: str, path: str, fn):
         """export 실행. 파일 잠김이면 자동으로 다른 이름으로 재시도."""

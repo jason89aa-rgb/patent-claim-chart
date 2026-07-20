@@ -162,14 +162,22 @@ class MappingEngine:
                 if m.doc_path == doc_path and m.page == page]
 
     def completion_ratio(self, claim_number: int) -> float:
-        """해당 청구항의 전체 구성요소 중 최소 1개 이상 매핑된 비율."""
+        """해당 청구항의 전체 구성요소 중 최소 1개 이상 매핑된 비율.
+
+        종속항은 인용항 구성요소까지 포함해 계산한다 — 인용항 구성요소도
+        대비돼야 하므로, 자기 추가 한정만으로 100%가 되면 안 된다.
+        """
+        from core.claim_scope import effective_elements
+
         claim = next((c for c in self.data.claims
                       if c.claim_number == claim_number), None)
-        if not claim or not claim.elements:
+        if not claim:
             return 0.0
+        scope = effective_elements(claim, self.data.claims)
+        if not scope:
+            return 0.0
+        # 상속 구성요소는 원래 청구항 번호로 매핑돼 있으므로 항 번호는 보지 않는다
         mapped_ids = {m.element_id for m in self.data.mappings
-                      if m.claim_number == claim_number}
-        elem_ids = {e.element_id for e in claim.elements}
-        if not elem_ids:
-            return 0.0
-        return len(mapped_ids & elem_ids) / len(elem_ids)
+                      if m.element_id}
+        done = sum(1 for s in scope if s.element_id in mapped_ids)
+        return done / len(scope)

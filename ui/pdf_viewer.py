@@ -39,6 +39,7 @@ class PageCanvas(QLabel):
         self._pixmap_base: Optional[QPixmap] = None
         self._mappings: list[MappingEntry] = []
         self._search_rects: list[fitz.Rect] = []
+        self._focus_rect: Optional[list] = None
         self._page_index = 0
         self._element_colors: dict[str, tuple] = {}
         self._term_colors: dict[str, tuple] = {}
@@ -66,6 +67,11 @@ class PageCanvas(QLabel):
 
     def set_search_rects(self, rects: list[fitz.Rect]):
         self._search_rects = rects
+        self._render()
+
+    def set_focus_rect(self, rect: Optional[list]):
+        """커버리지/매핑 목록에서 찾아온 위치를 잠깐 강조."""
+        self._focus_rect = list(rect) if rect else None
         self._render()
 
     def set_scale(self, scale: float):
@@ -138,6 +144,13 @@ class PageCanvas(QLabel):
             else:
                 painter.setPen(QPen(QColor(*color), 1))
                 painter.drawRect(r)
+
+        # 위치 이동으로 방금 찾아온 영역 (잠깐 강조 후 사라짐)
+        if self._focus_rect:
+            r = self._pdf_rect_to_screen(self._focus_rect)
+            painter.setBrush(QBrush(QColor(42, 193, 188, 60)))
+            painter.setPen(QPen(QColor(42, 193, 188), 3))
+            painter.drawRect(r.adjusted(-3, -3, 3, 3))
 
         # 드래그 선택 영역
         if self._drag_rect:
@@ -619,6 +632,22 @@ class DocumentViewer(QWidget):
         self.canvas.set_search_rects([])
         self.hit_label.setText("")
 
+    def goto_rect(self, page: int, rect: list):
+        """해당 페이지의 영역으로 이동하고 잠깐 강조한다 (매핑 검증용)."""
+        if page != self._current_page:
+            self._goto_page(page)
+        r = list(rect or [])
+        if len(r) != 4 or (r[2] - r[0]) <= 0 or (r[3] - r[1]) <= 0:
+            return
+        self.canvas.set_focus_rect(r)
+        cx = int((r[0] + r[2]) / 2 * self._scale)
+        cy = int((r[1] + r[3]) / 2 * self._scale)
+        self.scroll_area.ensureVisible(cx, cy, 260, 220)
+        # 3초 뒤 강조 해제 (탭이 닫혀도 안전하도록 존재 확인)
+        QTimer.singleShot(3000, lambda: (
+            self.canvas.set_focus_rect(None)
+            if self.canvas is not None else None))
+
     def _on_selection(self, rect: list, extracted_text: str):
         self.mapping_requested.emit(
             self.doc_path, self._current_page, rect, extracted_text)
@@ -807,6 +836,13 @@ class PDFViewerPanel(QWidget):
 
     def get_open_paths(self) -> list[str]:
         return list(self._viewers.keys())
+
+    def viewer_for(self, path: str):
+        """경로로 뷰어를 찾는다 (탭은 정규화된 경로로 보관된다)."""
+        if not path:
+            return None
+        return (self._viewers.get(path)
+                or self._viewers.get(os.path.normpath(os.path.abspath(path))))
 
     def set_ocr(self, enabled: bool):
         self._use_ocr = enabled
