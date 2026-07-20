@@ -56,6 +56,69 @@ _DEP_PATTERNS = [
 ]
 
 
+# ---------------------------------------------------------- 표(TABLE) 제거
+_TABLE_HEAD_RE = re.compile(r"^\s*TABLE\s+\d+", re.I)
+_NUM_TOKEN_RE = re.compile(r"^[-+(]?[\d.,]+\)?%?$")
+_UNIT_RE = re.compile(
+    r"\[\s*(?:V|%|nm|nits|h|A|8|cd\s*/\s*A|mA\s*/\s*cm2)\s*\]", re.I)
+
+
+def _is_table_line(text: str) -> bool:
+    """명세서 표의 캡션/헤더/데이터 행으로 보이는 줄인지."""
+    t = text.strip()
+    if not t:
+        return False
+    if _TABLE_HEAD_RE.match(t):
+        return True
+    toks = t.split()
+    if not toks:
+        return False
+    numeric = sum(1 for x in toks if _NUM_TOKEN_RE.match(x))
+    if len(toks) >= 3 and numeric / len(toks) >= 0.5:
+        return True
+    if len(_UNIT_RE.findall(t)) >= 2:
+        return True
+    return False
+
+
+_CLAIM_NUM_RE = re.compile(r"^\s*\d{1,3}\s*\.")
+
+
+def _strip_table_lines(lines: list, col_w: float = 0.0) -> list:
+    """명세서 표 줄을 제거.
+
+    lines: [(text, x0, x1), ...]  — 줄 너비를 함께 받아야
+    표의 '셀 조각'(좁은 줄)과 청구항 본문(컬럼 폭을 꽉 채움)을 구분할 수 있다.
+
+    US 특허는 청구항과 명세서 표가 같은 페이지에 섞이는 경우가 있어,
+    걸러내지 않으면 청구항 본문에 표 수치가 끼어든다.
+    """
+    out = []
+    drop_next = False
+    for text, x0, x1 in lines:
+        t = text.strip()
+        if not t:
+            continue
+
+        if _is_table_line(t):
+            # TABLE 헤더 바로 다음 줄은 표 캡션이므로 함께 버린다
+            drop_next = bool(_TABLE_HEAD_RE.match(t))
+            continue
+        if drop_next:
+            drop_next = False
+            continue
+
+        # 좁고 짧은 줄 = 표 셀 조각 (청구항 문장/번호/문장부호 끝은 보존)
+        toks = t.split()
+        narrow = col_w > 0 and (x1 - x0) < col_w * 0.45
+        if (narrow and len(toks) <= 5
+                and not _CLAIM_NUM_RE.match(t)
+                and t[-1] not in ".;:,"):
+            continue
+        out.append(text)
+    return out
+
+
 def _page_text_two_column(page) -> str:
     """
     2단 레이아웃 페이지를 좌→우 컬럼 순서로 재구성.
@@ -92,9 +155,16 @@ def _page_text_two_column(page) -> str:
                 groups[-1][1].append((x, token))
             else:
                 groups.append([y, [(x, token)]])
+        col_lines = []
         for _, items in groups:
             items.sort()
-            lines_out.append(" ".join(t for _, t in items))
+            text = " ".join(t for _, t in items)
+            col_lines.append((text, items[0][0], items[-1][0]))
+        col_w = 0.0
+        if col_lines:
+            col_w = max(x1 - x0 for _, x0, x1 in col_lines)
+        # 같은 페이지에 섞인 명세서 표를 제거 (청구항 오염 방지)
+        lines_out.extend(_strip_table_lines(col_lines, col_w))
     return "\n".join(lines_out)
 
 

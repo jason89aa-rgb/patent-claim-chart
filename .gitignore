@@ -3,3 +3,7 @@ build/
 __pycache__/
 *.pyc
 .claude/settings.local.json
+.claude.zip
+design_A.pptx
+design_B.pptx
+design_C.pptx

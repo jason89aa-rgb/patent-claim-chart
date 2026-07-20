@@ -816,6 +816,23 @@ class ClaimEditorPanel(QWidget):
         ))
         return term_id
 
+    def add_alias(self, term_id: str, text: str) -> bool:
+        """선행문헌 쪽 표기를 기존 용어의 별칭으로 등록 (같은 색으로 표시)."""
+        text = (text or "").strip()
+        if not text or not term_id:
+            return False
+        for t in self._terms:
+            if t.term_id != term_id:
+                continue
+            existing = [t.text] + list(t.aliases or [])
+            if any((e or "").lower() == text.lower() for e in existing):
+                return False
+            t.aliases = list(t.aliases or []) + [text]
+            self._refresh_term_ui()
+            self.claim_changed.emit()
+            return True
+        return False
+
     def add_terms(self, texts: list[str]):
         """여러 용어 일괄 등록."""
         added = 0
@@ -860,11 +877,18 @@ class ClaimEditorPanel(QWidget):
         self.term_list.clear()
         for t in self._terms:
             rgb = tuple(t.color_rgb)
-            item = QListWidgetItem(f" {t.term_id}  {t.text} ")
+            aliases = [a for a in (t.aliases or []) if (a or "").strip()]
+            label = f" {t.term_id}  {t.text} "
+            if aliases:
+                label += f"= {' / '.join(aliases)} "
+            item = QListWidgetItem(label)
             item.setBackground(QColor(*rgb))
             item.setForeground(QColor(get_text_color(rgb)))
             item.setData(Qt.ItemDataRole.UserRole, t.term_id)
-            item.setToolTip(f"{t.term_id}: {t.text}\n(더블클릭으로 삭제)")
+            tip = f"{t.term_id}: {t.text}"
+            if aliases:
+                tip += "\n선행문헌 표기: " + ", ".join(aliases)
+            item.setToolTip(tip + "\n(더블클릭으로 삭제)")
             self.term_list.addItem(item)
         self.term_count_label.setText(f"{len(self._terms)}개")
 

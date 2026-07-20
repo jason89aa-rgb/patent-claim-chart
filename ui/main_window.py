@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
         # 우측: PDF 뷰어
         self.pdf_viewer = PDFViewerPanel()
         self.pdf_viewer.mapping_requested.connect(self._on_mapping_requested)
+        self.pdf_viewer.alias_requested.connect(self._on_alias_requested)
         self.main_splitter.addWidget(self.pdf_viewer)
 
         self.main_splitter.setSizes([500, 1100])
@@ -233,8 +234,10 @@ class MainWindow(QMainWindow):
         for claim in self._pm.data.claims:
             for elem in claim.elements:
                 element_colors[elem.element_id] = tuple(elem.color_rgb)
-        term_colors = {t.term_id: tuple(t.color_rgb)
-                       for t in self._pm.data.terms}
+        # 용어는 청구항 패널이 실제 보유자 (프로젝트 데이터는 저장 시 동기화)
+        terms = self.claim_editor.get_terms()
+        term_colors = {t.term_id: tuple(t.color_rgb) for t in terms}
+        self.pdf_viewer.set_terms(terms)
         self.pdf_viewer.update_mappings(self._pm.data.mappings,
                                         element_colors, term_colors)
         self._update_title()
@@ -258,6 +261,20 @@ class MainWindow(QMainWindow):
     def _on_mapping_changed(self):
         self._pm.mark_dirty()
         self._refresh_mapping_panel()
+
+    def _on_alias_requested(self, term_id: str, keyword: str):
+        """뷰어에서 검색한 단어를 해당 용어의 선행문헌 표기로 등록."""
+        term = next((t for t in self.claim_editor.get_terms()
+                     if t.term_id == term_id), None)
+        if term is None:
+            return
+        if self.claim_editor.add_alias(term_id, keyword):
+            self.status_label.setText(
+                f'"{keyword}" → {term.term_id} {term.text} 과(와) 같은 색으로 표시')
+            self._pm.mark_dirty()
+            self._refresh_mapping_panel()
+        else:
+            self.status_label.setText(f'"{keyword}" 은(는) 이미 등록되어 있습니다')
 
     def _on_mapping_requested(self, doc_path: str, page: int,
                                rect: list, extracted_text: str):

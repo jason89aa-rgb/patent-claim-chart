@@ -16,6 +16,7 @@ from PyQt6.QtGui import (QImage, QPixmap, QPainter, QPen, QColor,
 
 from core.project import MappingEntry, ClaimElement
 from utils.color_utils import rgb_to_hex
+from utils.term_format import term_texts
 
 
 class PageCanvas(QLabel):
@@ -223,6 +224,8 @@ class PageCanvas(QLabel):
 class DocumentViewer(QWidget):
     """단일 문서(PDF/이미지) 뷰어 탭."""
     mapping_requested = pyqtSignal(str, int, list, str)
+    # (term_id, 검색 키워드) — 키워드를 그 용어의 선행문헌 표기로 등록 요청
+    alias_requested = pyqtSignal(str, str)
 
     def __init__(self, doc_path: str, use_ocr: bool = False, parent=None):
         super().__init__(parent)
@@ -231,6 +234,7 @@ class DocumentViewer(QWidget):
         self._doc: Optional[fitz.Document] = None
         self._current_page = 0
         self._scale = 1.5
+        self._terms: list = []
         self._setup_ui()
         self._load_document()
 
@@ -323,6 +327,13 @@ class DocumentViewer(QWidget):
         next_hit_btn.setFixedWidth(42)
         next_hit_btn.setToolTip("다음 검색 결과")
         next_hit_btn.clicked.connect(lambda: self._goto_hit(1))
+        self.term_btn = QPushButton("용어 색")
+        self.term_btn.setFixedWidth(64)
+        self.term_btn.setToolTip(
+            "검색한 단어를 청구항 용어의 '선행문헌 표기'로 등록합니다.\n"
+            "등록하면 그 단어가 용어와 같은 색으로 표시되고,\n"
+            "매핑·도면 캡처·보고서에서도 같은 색이 적용됩니다.")
+        self.term_btn.clicked.connect(self._show_term_menu)
         clear_btn = QPushButton("✕")
         clear_btn.setFixedWidth(42)
         clear_btn.setToolTip("검색 지우기")
@@ -332,6 +343,7 @@ class DocumentViewer(QWidget):
         toolbar.addWidget(prev_hit_btn)
         toolbar.addWidget(next_hit_btn)
         toolbar.addWidget(self.hit_label)
+        toolbar.addWidget(self.term_btn)
         toolbar.addWidget(clear_btn)
 
         # 검색 상태
@@ -461,6 +473,71 @@ class DocumentViewer(QWidget):
             return parts
         return [w for w in query.split() if w.strip()]
 
+    def set_terms(self, terms: list):
+        """프로젝트 매칭 용어 리스트(참조)를 설정."""
+        self._terms = terms or []
+        if getattr(self, "_search_hits", None):
+            self._refresh_search_display()
+
+    def _term_for_keyword(self, kw: str):
+        """검색 키워드가 등록 용어(또는 그 별칭)와 일치하면 해당 용어 반환."""
+        low = (kw or "").strip().lower()
+        if not low:
+            return None
+        for t in self._terms:
+            for txt in term_texts(t):
+                tl = txt.lower()
+                if low == tl or low == tl + "s" or low + "s" == tl:
+                    return t
+        return None
+
+    def _hit_color(self, ki: int) -> tuple:
+        """등록 용어와 일치하는 키워드는 용어 색, 아니면 형광펜 팔레트."""
+        if 0 <= ki < len(self._search_kws):
+            t = self._term_for_keyword(self._search_kws[ki])
+            if t is not None:
+                return tuple(t.color_rgb)
+        return self.SEARCH_COLORS[ki % len(self.SEARCH_COLORS)]
+
+    def _show_term_menu(self):
+        """검색어를 어느 용어의 선행문헌 표기로 등록할지 고르는 메뉴."""
+        from PyQt6.QtGui import QAction, QPixmap
+        from PyQt6.QtWidgets import QMenu, QMessageBox
+
+        kws = self._search_kws or self._parse_keywords(
+            self.search_input.text().strip())
+        if not kws:
+            QMessageBox.information(
+                self, "알림",
+                "먼저 색을 지정할 단어를 검색해 주세요.")
+            return
+        if not self._terms:
+            QMessageBox.information(
+                self, "알림",
+                "등록된 매칭 용어가 없습니다.\n"
+                "왼쪽 청구항 패널에서 용어를 먼저 등록해 주세요.")
+            return
+
+        kw = kws[0] if len(kws) == 1 else ", ".join(kws)
+        menu = QMenu(self)
+        menu.addAction(f'"{kw}" → 아래 용어와 같은 색으로').setEnabled(False)
+        menu.addSeparator()
+        for t in self._terms:
+            pm = QPixmap(14, 14)
+            pm.fill(QColor(*tuple(t.color_rgb)))
+            act = QAction(QIcon(pm), f"{t.term_id}  {t.text}", menu)
+            act.triggered.connect(
+                lambda _checked=False, tid=t.term_id: self._assign_terms(tid))
+            menu.addAction(act)
+        menu.exec(self.term_btn.mapToGlobal(
+            self.term_btn.rect().bottomLeft()))
+
+    def _assign_terms(self, term_id: str):
+        kws = self._search_kws or self._parse_keywords(
+            self.search_input.text().strip())
+        for kw in kws:
+            self.alias_requested.emit(term_id, kw)
+
     def _search_or_next(self):
         """검색어가 바뀌었으면 새로 검색, 같으면 다음 결과로."""
         query = self.search_input.text().strip()
@@ -522,8 +599,8 @@ class DocumentViewer(QWidget):
         items = []
         for i, (pno, rect, ki) in enumerate(self._search_hits):
             if pno == self._current_page:
-                color = self.SEARCH_COLORS[ki % len(self.SEARCH_COLORS)]
-                items.append((rect, color, i == self._search_idx))
+                items.append((rect, self._hit_color(ki),
+                              i == self._search_idx))
         self.canvas.set_search_rects(items)
 
         if not self._last_query:
@@ -566,10 +643,12 @@ class DocumentViewer(QWidget):
 class PDFViewerPanel(QWidget):
     """우측 PDF 뷰어 전체 패널 (여러 문서 탭)."""
     mapping_requested = pyqtSignal(str, int, list, str)
+    alias_requested = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._viewers: dict[str, DocumentViewer] = {}
+        self._terms: list = []
         self._setup_ui()
         self._use_ocr = False
 
@@ -584,6 +663,13 @@ class PDFViewerPanel(QWidget):
         open_btn.setStyleSheet("font-weight: bold; padding: 5px 12px;")
         open_btn.clicked.connect(self.open_document_dialog)
         btn_bar.addWidget(open_btn)
+
+        paste_btn = QPushButton("텍스트 붙여넣기")
+        paste_btn.setToolTip(
+            "PDF 대신 명세서 텍스트를 복사해 붙여넣습니다.\n"
+            "문서 탭으로 변환되어 드래그 선택·검색·매핑이 그대로 동작합니다.")
+        paste_btn.clicked.connect(self.open_pasted_text_dialog)
+        btn_bar.addWidget(paste_btn)
 
         close_btn = QPushButton("현재 탭 닫기")
         close_btn.clicked.connect(self._close_current_tab)
@@ -638,7 +724,7 @@ class PDFViewerPanel(QWidget):
     def _on_tab_changed(self):
         self._update_empty_state()
 
-    def open_document(self, path: str):
+    def open_document(self, path: str, label: str = ""):
         # 경로 정규화 (중복 방지)
         path = os.path.normpath(os.path.abspath(path))
 
@@ -651,9 +737,10 @@ class PDFViewerPanel(QWidget):
 
         viewer = DocumentViewer(path, use_ocr=self._use_ocr)
         viewer.mapping_requested.connect(self.mapping_requested)
+        viewer.alias_requested.connect(self.alias_requested)
+        viewer.set_terms(self._terms)
         self._viewers[path] = viewer
-        label = os.path.basename(path)
-        idx = self.tab_widget.addTab(viewer, label)
+        idx = self.tab_widget.addTab(viewer, label or os.path.basename(path))
         self.tab_widget.setCurrentIndex(idx)
         self._update_empty_state()
 
@@ -665,6 +752,29 @@ class PDFViewerPanel(QWidget):
         )
         for p in paths:
             self.open_document(p)
+
+    def open_pasted_text_dialog(self):
+        """명세서 텍스트를 붙여넣어 문서 탭으로 연다."""
+        from ui.paste_text_dialog import PasteTextDialog
+        from core.text_doc import make_text_pdf
+
+        dlg = PasteTextDialog(self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        title, text = dlg.get_result()
+        if not text.strip():
+            return
+        path = make_text_pdf(text, title)
+        if not path:
+            QMessageBox.warning(self, "오류",
+                                "텍스트를 문서로 변환하지 못했습니다.")
+            return
+        self.open_document(path, label=title or "붙여넣은 명세서")
+
+    def set_terms(self, terms: list):
+        self._terms = terms or []
+        for viewer in self._viewers.values():
+            viewer.set_terms(self._terms)
 
     def _close_current_tab(self):
         idx = self.tab_widget.currentIndex()

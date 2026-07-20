@@ -48,9 +48,16 @@ class ClaimTerm:
     청구항 텍스트와 선행문헌에서 같은 용어는 같은 색으로 표시된다.
     """
     term_id: str = ""          # "T1", "T2", ...
-    text: str = ""             # 용어 (예: "power line")
+    text: str = ""             # 청구항 쪽 용어 (예: "power line")
     color_rgb: tuple = (200, 100, 100)
     note: str = ""
+    # 선행문헌 쪽 대응 표기 (예: "VDDL", "구동 전압선") — 같은 색으로 표시된다
+    aliases: list = field(default_factory=list)
+
+    def all_texts(self) -> list:
+        """이 요소를 가리키는 모든 표기 (청구항 용어 + 별칭)."""
+        out = [self.text] + list(self.aliases or [])
+        return [t for t in out if (t or "").strip()]
 
 
 @dataclass
@@ -206,6 +213,7 @@ class ProjectManager:
                 text=t.get("text", ""),
                 color_rgb=tuple(t.get("color_rgb", [200, 100, 100])),
                 note=t.get("note", ""),
+                aliases=list(t.get("aliases", [])),
             ))
 
         mappings = []

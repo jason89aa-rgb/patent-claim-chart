@@ -2,6 +2,29 @@
 import re
 
 
+def term_texts(term) -> list:
+    """용어가 가진 모든 표기 (청구항 용어 + 선행문헌 별칭)."""
+    texts = [getattr(term, "text", "")]
+    texts += list(getattr(term, "aliases", None) or [])
+    seen, out = set(), []
+    for t in texts:
+        t = (t or "").strip()
+        low = t.lower()
+        if t and low not in seen:
+            seen.add(low)
+            out.append(t)
+    return out
+
+
+def _text_term_pairs(terms: list) -> list:
+    """[(표기, 용어), ...] — 긴 표기 우선 정렬."""
+    pairs = []
+    for t in (terms or []):
+        for txt in term_texts(t):
+            pairs.append((txt, t))
+    return sorted(pairs, key=lambda p: -len(p[0]))
+
+
 def split_by_terms(text: str, terms: list) -> list:
     """
     텍스트를 용어 경계로 쪼갠다.
@@ -10,14 +33,12 @@ def split_by_terms(text: str, terms: list) -> list:
     """
     if not text:
         return []
-    valid = [t for t in (terms or []) if getattr(t, "text", "").strip()]
-    if not valid:
+    pairs = _text_term_pairs(terms)
+    if not pairs:
         return [(text, None)]
 
-    # 긴 용어 우선 (power line unit > power line)
-    valid = sorted(valid, key=lambda t: -len(t.text))
     # 복수형도 함께 매칭: "power line" → "power lines"
-    pattern = "|".join(re.escape(t.text) + r's?' for t in valid)
+    pattern = "|".join(re.escape(txt) + r's?' for txt, _ in pairs)
 
     chunks = []
     last = 0
@@ -25,7 +46,7 @@ def split_by_terms(text: str, terms: list) -> list:
         if m.start() > last:
             chunks.append((text[last:m.start()], None))
         matched = m.group(0)
-        term = _find_term(matched, valid)
+        term = _find_term(matched, pairs)
         color = tuple(term.color_rgb) if term else None
         chunks.append((matched, color))
         last = m.end()
@@ -34,14 +55,14 @@ def split_by_terms(text: str, terms: list) -> list:
     return chunks or [(text, None)]
 
 
-def _find_term(matched: str, terms: list):
+def _find_term(matched: str, pairs: list):
     low = matched.lower()
-    for t in terms:
-        tl = t.text.lower()
+    for txt, t in pairs:
+        tl = txt.lower()
         if low == tl or low == tl + "s":
             return t
-    for t in terms:
-        if low.startswith(t.text.lower()):
+    for txt, t in pairs:
+        if low.startswith(txt.lower()):
             return t
     return None
 
@@ -120,8 +141,8 @@ def terms_in_text(text: str, terms: list) -> list:
         return []
     found = []
     for t in (terms or []):
-        if not getattr(t, "text", "").strip():
-            continue
-        if re.search(re.escape(t.text) + r's?', text, re.IGNORECASE):
-            found.append(t)
+        for txt in term_texts(t):
+            if re.search(re.escape(txt) + r's?', text, re.IGNORECASE):
+                found.append(t)
+                break
     return found

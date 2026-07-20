@@ -4,6 +4,8 @@ import os
 import re
 import tempfile
 
+from utils.term_format import term_texts
+
 try:
     import fitz  # PyMuPDF
     FITZ_AVAILABLE = True
@@ -204,11 +206,11 @@ def _word_marks_for_mapping(m, colors: dict, terms: list) -> list:
 
     matched = False
     for t in (terms or []):
-        t_text = getattr(t, "text", "").strip()
-        if t_text and re.search(re.escape(t_text) + r"s?", text,
-                                re.IGNORECASE):
-            marks.append((t_text, tuple(t.color_rgb)))
-            matched = True
+        # 청구항 용어와 선행문헌 별칭(예: "power lines" ↔ "VDDL")을 모두 본다
+        for t_text in term_texts(t):
+            if re.search(re.escape(t_text) + r"s?", text, re.IGNORECASE):
+                marks.append((t_text, tuple(t.color_rgb)))
+                matched = True
     if matched:
         return marks
 
