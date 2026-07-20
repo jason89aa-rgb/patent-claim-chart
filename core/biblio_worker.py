@@ -20,6 +20,9 @@ def _worker_command(pdf_path: str, out_path: str) -> tuple:
             if key.startswith("_PYI") or key.startswith("_MEIPASS"):
                 env.pop(key, None)
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        # 부모가 잡아둔 언어팩 경로는 부모의 임시폴더를 가리킨다.
+        # 자식이 자기 번들에서 다시 찾도록 지운다.
+        env.pop("TESSDATA_PREFIX", None)
         return sys.executable, ["--extract-biblio", pdf_path, out_path], env
 
     main_py = os.path.join(

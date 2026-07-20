@@ -17,6 +17,8 @@ except ImportError:
     FITZ_AVAILABLE = False
 
 
+import sys
+
 # PATH에 없어도 표준 설치 경로에서 Tesseract를 자동 감지
 _TESSERACT_CANDIDATES = [
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
@@ -24,6 +26,15 @@ _TESSERACT_CANDIDATES = [
     os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
     os.path.expandvars(r"%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe"),
 ]
+
+
+def _bundle_dir() -> str:
+    """PyInstaller 번들 안의 tesseract 폴더 (개발 환경에서는 빈 문자열)."""
+    base = getattr(sys, "_MEIPASS", "")
+    if not base:
+        return ""
+    path = os.path.join(base, "tesseract")
+    return path if os.path.isdir(path) else ""
 
 
 # 추가 언어팩 위치. Program Files\Tesseract-OCR\tessdata 는 관리자 권한이
@@ -34,23 +45,41 @@ USER_TESSDATA = os.path.join(
 
 
 def _configure_tessdata():
-    """사용자 tessdata 폴더에 언어팩이 있으면 그쪽을 쓰도록 설정.
+    """언어팩 폴더를 지정한다 (번들본 우선).
 
-    TESSDATA_PREFIX는 검색 경로를 대체하므로, 사용자 폴더에 eng/osd까지
-    갖춰져 있을 때만 전환한다.
+    TESSDATA_PREFIX는 검색 경로를 대체하므로, eng까지 갖춰진
+    폴더일 때만 전환한다.
     """
     if os.environ.get("TESSDATA_PREFIX"):
         return                      # 사용자가 직접 지정한 값을 존중
-    try:
-        names = {f.lower() for f in os.listdir(USER_TESSDATA)}
-    except OSError:
-        return
-    if "eng.traineddata" in names and len(names) > 2:
-        os.environ["TESSDATA_PREFIX"] = USER_TESSDATA
+    bundled = _bundle_dir()
+    candidates = [os.path.join(bundled, "tessdata")] if bundled else []
+    candidates.append(USER_TESSDATA)
+    for path in candidates:
+        try:
+            names = {f.lower() for f in os.listdir(path)}
+        except OSError:
+            continue
+        if "eng.traineddata" in names and len(names) > 2:
+            os.environ["TESSDATA_PREFIX"] = path
+            return
 
 
 def _configure_tesseract():
+    """tesseract 실행파일 위치를 정한다 (번들본 우선).
+
+    번들본을 먼저 쓰므로 Tesseract가 설치되지 않은 PC에서도 동작한다.
+    """
     if not OCR_AVAILABLE:
+        return
+    bundled = _bundle_dir()
+    if bundled:
+        exe = os.path.join(bundled, "tesseract.exe")
+        if os.path.exists(exe):
+            pytesseract.pytesseract.tesseract_cmd = exe
+            return
+    # 테스트용: 번들본만으로 동작하는지 확인할 때 시스템 설치를 무시한다
+    if os.environ.get("PCC_BUNDLED_TESSERACT_ONLY"):
         return
     try:
         pytesseract.get_tesseract_version()

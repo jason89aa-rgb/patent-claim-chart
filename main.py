@@ -135,6 +135,53 @@ def _run_biblio_worker() -> int:
         return 1
 
 
+def _run_selftest_ocr() -> int:
+    """--selftest-ocr <pdf>: 번들된 Tesseract만으로 OCR이 되는지 확인.
+
+    다른 PC(= Tesseract 미설치)에서도 동작하는지 배포 전에 검증하는 용도.
+    tesseract 경로와 언어팩 경로가 번들 안(_MEIPASS)을 가리켜야 한다.
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace",
+                               line_buffering=True)
+    except Exception:
+        pass
+
+    # 시스템에 설치된 Tesseract를 무시하고 번들본만 쓰게 한다
+    os.environ["PCC_BUNDLED_TESSERACT_ONLY"] = "1"
+
+    import pytesseract
+    from core import ocr_engine
+
+    meipass = getattr(sys, "_MEIPASS", "")
+    cmd = pytesseract.pytesseract.tesseract_cmd
+    prefix = os.environ.get("TESSDATA_PREFIX", "")
+    print(f"MEIPASS   {meipass}", flush=True)
+    print(f"TESSERACT {cmd}", flush=True)
+    print(f"TESSDATA  {prefix}", flush=True)
+    print(f"BUNDLED   {bool(meipass) and str(cmd).startswith(meipass)}",
+          flush=True)
+    try:
+        print(f"VERSION   {pytesseract.get_tesseract_version()}", flush=True)
+        print(f"LANGS     {sorted(pytesseract.get_languages(config=''))}",
+              flush=True)
+    except Exception as e:
+        print(f"ERROR {type(e).__name__}: {e}", flush=True)
+        return 1
+
+    if len(sys.argv) >= 3:
+        from core.biblio_extractor import extract_biblio
+        biblio = extract_biblio(sys.argv[2], use_ocr=True)
+        got = {k: v for k, v in biblio.items() if v and k != "_source"}
+        print(f"OCR-FIELDS {len(got)}", flush=True)
+        for key in ("title", "applicant", "application_number",
+                    "application_date"):
+            if biblio.get(key):
+                print(f"  {key} = {biblio[key]}", flush=True)
+    print("OCR-SELFTEST-OK", flush=True)
+    return 0
+
+
 def _run_selftest_extract() -> int:
     """--selftest-extract 모드: '프리즈 부모가 프리즈 자식을 낳는' 조합 검증.
 
@@ -204,4 +251,7 @@ if __name__ == "__main__":
     # 프리즈 자기실행 검증 모드 (배포 전 테스트용)
     if len(sys.argv) >= 3 and sys.argv[1] == "--selftest-extract":
         sys.exit(_run_selftest_extract())
+    # 번들 Tesseract만으로 OCR이 되는지 검증 (다른 PC 배포 전)
+    if len(sys.argv) >= 2 and sys.argv[1] == "--selftest-ocr":
+        sys.exit(_run_selftest_ocr())
     main()

@@ -614,6 +614,9 @@ class ClaimEditorPanel(QWidget):
                 if key.startswith("_PYI") or key.startswith("_MEIPASS"):
                     env.remove(key)
             env.insert("PYINSTALLER_RESET_ENVIRONMENT", "1")
+            # 부모의 언어팩 경로(부모 임시폴더)를 물려주지 않는다 —
+            # 자식이 자기 번들에서 다시 찾아야 한다
+            env.remove("TESSDATA_PREFIX")
             proc.setProcessEnvironment(env)
         else:
             program = sys.executable
