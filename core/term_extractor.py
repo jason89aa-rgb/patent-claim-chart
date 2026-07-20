@@ -47,20 +47,115 @@ _BOUNDARY_WORDS = {
     'cause', 'causes', 'emit', 'emits', 'emitting', 'said',
 }
 
-# 한국어 조사/기능어
+# 한국어 기능어 (명사 후보에서 제외)
 _KO_STOPWORDS = {
-    '상기', '있어서', '포함하는', '포함하고', '구비하는', '및', '또는',
-    '제1', '제2', '제3', '복수의', '각각', '적어도', '하나의', '것을',
-    '특징으로', '하는', '장치', '방법',
+    '상기', '있어서', '포함', '구비', '및', '또는', '이때', '여기서',
+    '복수', '각각', '적어도', '하나', '것', '특징', '경우', '위해', '통해',
+    '대하', '의하', '따르', '이상', '이하', '동안', '수', '때', '등',
+    '다수', '소정', '일측', '타측', '내지', '사이', '다른', '각',
+    '제1항', '제2항', '제3항', '제4항', '제5항', '청구항',
 }
+
+# 조사 — 명사 뒤에 붙는다. 긴 것부터 떼어낸다.
+_KO_PARTICLES = sorted([
+    '으로써', '으로서', '에서의', '에게서', '으로부터', '로부터',
+    '에서', '에게', '으로', '이나', '이며', '이고', '까지', '부터',
+    '보다', '처럼', '만큼', '마다', '조차', '라도', '이라', '와의', '과의',
+    '의', '을', '를', '이', '가', '은', '는', '에', '로', '와', '과',
+    '도', '만', '나', '며', '고',
+], key=len, reverse=True)
+
+# 용언(동사/형용사) 어미 — 이걸로 끝나면 서술부이므로 용어가 아니다.
+# "배출시켜", "방지하는", "생산하도록", "가동하여" 등을 걸러낸다.
+_KO_VERB_TAIL = re.compile(
+    r'(?:하는|하여|하고|하며|하도록|하지|한다|해서|해야|했|하기|'
+    r'되는|되어|되며|되고|되도록|된다|됐|되기|'
+    r'시켜|시키는|시키고|시킨|시킬|'
+    r'지는|지고|진다|짐|도록|'
+    r'있는|있고|있어|있음|없는|없이|없음|같은|같이|'
+    r'위해|위한|따라|따른|의해|의한|대한|대해|'
+    r'이며|이고|이다|인|일|할|한|될|된|줄|주는)$')
+
+# 명사로 보기 어려운 어미.
+# '기'·'음'은 넣지 않는다 — 증발기·전환기처럼 기계 명칭에 흔히 쓰인다
+# (하기·되기·있음 같은 명사형은 위 용언 어미에서 이미 걸러진다).
+_KO_NON_NOUN = re.compile(r'(?:함|됨|짐)$')
+
+_HANGUL_RE = re.compile(r'[가-힣]')
 
 # 명사구 후보: (한정사)? + 형용사/명사 1~4개
 _NP_PATTERN = re.compile(
     rf'\b{_DETERMINERS}\s+((?:[a-z][a-z\-]*\s+){{0,3}}[a-z][a-z\-]*s?)\b',
     re.IGNORECASE)
 
-# 한국어 명사구: "상기 XXX" 또는 2글자 이상 한글 연쇄
-_KO_NP_PATTERN = re.compile(r'(?:상기\s*)?([가-힣]{2,}(?:\s+[가-힣]{2,}){0,2})')
+# 어절 단위 토큰 (제1증발기, S-HTL1 같은 혼합 표기 유지)
+_KO_TOKEN_RE = re.compile(r'[가-힣A-Za-z0-9][가-힣A-Za-z0-9\-]*')
+
+
+def _strip_particle(token: str) -> tuple:
+    """어절에서 조사를 떼어낸다. 반환: (명사 어간, 조사가 있었는지).
+
+    조사를 떼면 한 글자만 남는 어절('것을', '항에')은 명사 후보가
+    아니므로 빈 어간을 돌려준다.
+    """
+    for p in _KO_PARTICLES:
+        if token.endswith(p):
+            stem = token[:-len(p)]
+            return (stem, True) if len(stem) >= 2 else ("", True)
+    return token, False
+
+
+def _ko_noun(token: str) -> str:
+    """어절이 명사(구성요소 후보)면 어간을, 아니면 빈 문자열을 반환."""
+    if not _HANGUL_RE.search(token):
+        return ""
+    if _KO_VERB_TAIL.search(token):        # 서술부는 용어가 아니다
+        return ""
+    stem, _had = _strip_particle(token)
+    if len(stem) < 2 or stem in _KO_STOPWORDS:
+        return ""
+    if _KO_VERB_TAIL.search(stem) or _KO_NON_NOUN.search(stem):
+        return ""
+    # 숫자만 남은 경우 제외
+    if not _HANGUL_RE.search(stem):
+        return ""
+    return stem
+
+
+# 단독으로는 용어가 아니지만 뒤 명사와 묶이면 의미가 있는 서수 ('제1 전극')
+_KO_ORDINAL = re.compile(r'제\s*\d+')
+
+
+def _ko_phrases(text: str) -> list:
+    """한국어 문장에서 명사(구) 후보를 뽑는다.
+
+    조사 없이 이어지는 명사는 복합어로 묶는다:
+    '증발기 전환장치는' → '증발기 전환장치'
+    '사출 성형의 냉각 시스템' → '사출 성형', '냉각 시스템'
+    """
+    out = []
+    for sentence in re.split(r'[.,;:()\[\]{}]|\n', text):
+        run = []          # 조사 없이 이어지는 명사 묶음
+        for token in _KO_TOKEN_RE.findall(sentence):
+            noun = _ko_noun(token)
+            if not noun:
+                if len(run) > 1:
+                    out.append(" ".join(run))
+                run = []
+                continue
+            _stem, had_particle = _strip_particle(token)
+            # 서수('제1')는 단독 후보로 내지 않고 복합어에만 참여시킨다
+            if not _KO_ORDINAL.fullmatch(noun):
+                out.append(noun)
+            run.append(noun)
+            if had_particle:
+                # 조사가 붙었으면 명사구가 여기서 끊긴다
+                if len(run) > 1:
+                    out.append(" ".join(run))
+                run = []
+        if len(run) > 1:
+            out.append(" ".join(run))
+    return out
 
 
 def _clean_phrase(phrase: str) -> str:
@@ -136,14 +231,10 @@ def extract_terms(text: str, min_count: int = 1) -> list[TermCandidate]:
     for m in _NP_PATTERN.finditer(text):
         add(m.group(1))
 
-    # 한국어
-    for m in _KO_NP_PATTERN.finditer(text):
-        phrase = m.group(1).strip()
-        words = [w for w in phrase.split() if w not in _KO_STOPWORDS]
-        phrase = " ".join(words)
-        if len(phrase) >= 2 and phrase not in _KO_STOPWORDS:
-            counts[phrase] = counts.get(phrase, 0) + 1
-            display.setdefault(phrase, phrase)
+    # 한국어 (조사·어미 처리 후 명사구만)
+    for phrase in _ko_phrases(text):
+        counts[phrase] = counts.get(phrase, 0) + 1
+        display.setdefault(phrase, phrase)
 
     result = [
         TermCandidate(text=display[k], count=v)

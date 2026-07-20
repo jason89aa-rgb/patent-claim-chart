@@ -13,6 +13,7 @@ from core.project import CaseInfo
 
 class CaseInfoPanel(QWidget):
     changed = pyqtSignal()
+    biblio_import_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -27,6 +28,19 @@ class CaseInfoPanel(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setSpacing(10)
+
+        # --- PDF에서 서지사항 가져오기 ---
+        import_bar = QHBoxLayout()
+        self.biblio_btn = QPushButton("PDF에서 서지사항 가져오기")
+        self.biblio_btn.setObjectName("primaryBtn")
+        self.biblio_btn.setToolTip(
+            "특허 PDF 1페이지에서 출원번호·출원일·우선일·등록번호 등을\n"
+            "자동으로 읽어 아래 항목을 채웁니다.\n"
+            "적용 전에 어떤 값이 들어갈지 확인할 수 있습니다.")
+        self.biblio_btn.clicked.connect(self.biblio_import_requested)
+        import_bar.addWidget(self.biblio_btn)
+        import_bar.addStretch()
+        layout.addLayout(import_bar)
 
         # --- 기본 정보 ---
         basic_group = QGroupBox("기본 사건 정보")
@@ -140,6 +154,44 @@ class CaseInfoPanel(QWidget):
         for fp in ci.family_patents:
             self.family_list.addItem(fp)
         self._building = False
+
+    def current_values(self) -> dict:
+        """현재 입력값 (가져오기 다이얼로그의 '현재 값' 비교용)."""
+        return {
+            "title": self.title_edit.text(),
+            "applicant": self.applicant_edit.text(),
+            "application_number": self.app_num_edit.text(),
+            "registration_number": self.reg_num_edit.text(),
+            "priority_date": self.priority_date_edit.text(),
+            "application_date": self.app_date_edit.text(),
+            "registration_date": self.reg_date_edit.text(),
+            "family_patents": [self.family_list.item(i).text()
+                               for i in range(self.family_list.count())],
+        }
+
+    def apply_biblio(self, values: dict):
+        """PDF에서 읽은 값 중 선택된 항목만 채운다."""
+        widgets = {
+            "title": self.title_edit,
+            "applicant": self.applicant_edit,
+            "application_number": self.app_num_edit,
+            "registration_number": self.reg_num_edit,
+            "priority_date": self.priority_date_edit,
+            "application_date": self.app_date_edit,
+            "registration_date": self.reg_date_edit,
+        }
+        self._building = True
+        for key, w in widgets.items():
+            if values.get(key):
+                w.setText(str(values[key]))
+        if values.get("family_patents"):
+            existing = {self.family_list.item(i).text()
+                        for i in range(self.family_list.count())}
+            for fp in values["family_patents"]:
+                if fp not in existing:
+                    self.family_list.addItem(fp)
+        self._building = False
+        self.changed.emit()
 
     def save_to(self, ci: CaseInfo):
         ci.title = self.title_edit.text()

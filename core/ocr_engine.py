@@ -26,6 +26,29 @@ _TESSERACT_CANDIDATES = [
 ]
 
 
+# 추가 언어팩 위치. Program Files\Tesseract-OCR\tessdata 는 관리자 권한이
+# 없으면 쓸 수 없어서, 사용자 폴더에 언어팩(chi_sim, kor 등)을 둔다.
+USER_TESSDATA = os.path.join(
+    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+    "PatentClaimChart", "tessdata")
+
+
+def _configure_tessdata():
+    """사용자 tessdata 폴더에 언어팩이 있으면 그쪽을 쓰도록 설정.
+
+    TESSDATA_PREFIX는 검색 경로를 대체하므로, 사용자 폴더에 eng/osd까지
+    갖춰져 있을 때만 전환한다.
+    """
+    if os.environ.get("TESSDATA_PREFIX"):
+        return                      # 사용자가 직접 지정한 값을 존중
+    try:
+        names = {f.lower() for f in os.listdir(USER_TESSDATA)}
+    except OSError:
+        return
+    if "eng.traineddata" in names and len(names) > 2:
+        os.environ["TESSDATA_PREFIX"] = USER_TESSDATA
+
+
 def _configure_tesseract():
     if not OCR_AVAILABLE:
         return
@@ -40,6 +63,7 @@ def _configure_tesseract():
             return
 
 
+_configure_tessdata()
 _configure_tesseract()
 
 _available_langs: Optional[set] = None

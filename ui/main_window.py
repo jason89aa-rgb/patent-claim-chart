@@ -17,6 +17,7 @@ from ui.claim_editor import ClaimEditorPanel
 from ui.pdf_viewer import PDFViewerPanel
 from ui.case_info_panel import CaseInfoPanel
 from ui.mapping_widget import MappingDialog, MappingListPanel
+from utils.errlog import log_exception
 
 
 from ui.theme import build_style
@@ -66,6 +67,8 @@ class MainWindow(QMainWindow):
 
         self.case_info_panel = CaseInfoPanel()
         self.case_info_panel.changed.connect(self._on_case_info_changed)
+        self.case_info_panel.biblio_import_requested.connect(
+            self._import_biblio)
         left_tabs.addTab(self.case_info_panel, "사건정보")
 
         self.main_splitter.addWidget(left_tabs)
@@ -261,6 +264,105 @@ class MainWindow(QMainWindow):
     def _on_mapping_changed(self):
         self._pm.mark_dirty()
         self._refresh_mapping_panel()
+
+    def _import_biblio(self):
+        """특허 PDF 1페이지에서 서지사항을 읽어 사건정보를 채운다."""
+        from core.biblio_extractor import extract_biblio
+        from ui.biblio_import_dialog import BiblioImportDialog
+
+        path = self._pick_biblio_source()
+        if not path:
+            return
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            biblio = extract_biblio(path)
+        except Exception as e:
+            log_exception(e)
+            biblio = None
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if not biblio:
+            QMessageBox.warning(self, "오류",
+                                "서지사항을 읽는 중 오류가 발생했습니다.")
+            return
+
+        # 텍스트 레이어가 없는 스캔본이면 OCR 제안
+        if not any(v for k, v in biblio.items() if k != "_source"):
+            biblio = self._try_biblio_ocr(path) or biblio
+
+        dlg = BiblioImportDialog(biblio, self.case_info_panel.current_values(),
+                                 parent=self)
+        if dlg.exec() == BiblioImportDialog.DialogCode.Accepted:
+            picked = dlg.selected()
+            if picked:
+                self.case_info_panel.apply_biblio(picked)
+                self.status_label.setText(
+                    f"서지사항 {len(picked)}개 항목을 가져왔습니다 "
+                    f"({os.path.basename(path)})")
+
+    def _try_biblio_ocr(self, path: str) -> dict:
+        """스캔본이면 사용자 동의를 받아 OCR로 다시 읽는다."""
+        from core.biblio_extractor import is_scanned
+        from core.biblio_worker import extract_biblio_ocr
+        from core.ocr_engine import is_ocr_available
+
+        if not is_scanned(path):
+            return None
+        if not is_ocr_available():
+            QMessageBox.information(
+                self, "스캔본",
+                "이 PDF는 텍스트가 없는 스캔본입니다.\n"
+                "OCR 엔진(Tesseract)이 설치되어 있지 않아 읽을 수 없습니다.")
+            return None
+
+        reply = QMessageBox.question(
+            self, "스캔본 OCR",
+            "이 PDF는 텍스트가 없는 스캔본입니다.\n"
+            "OCR로 서지 페이지를 읽어볼까요? (30초~2분 정도 걸립니다)\n\n"
+            "※ OCR 결과에는 오탈자가 있을 수 있으니\n"
+            "   적용 전에 값을 확인해 주세요.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if reply != QMessageBox.StandardButton.Yes:
+            return None
+
+        self.status_label.setText("스캔본 OCR 처리 중… (잠시 기다려 주세요)")
+        QApplication.processEvents()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            biblio, err = extract_biblio_ocr(path)
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.status_label.setText("")
+
+        if err:
+            QMessageBox.warning(self, "OCR 실패", err)
+            return None
+        return biblio
+
+    def _pick_biblio_source(self) -> str:
+        """서지사항을 읽을 PDF 선택 — 열려 있는 문서가 있으면 먼저 제시."""
+        from PyQt6.QtWidgets import QFileDialog, QInputDialog
+
+        opened = [p for p in self.pdf_viewer.get_open_paths()
+                  if p.lower().endswith(".pdf")]
+        if opened:
+            choices = [os.path.basename(p) for p in opened]
+            choices.append("다른 파일 선택…")
+            pick, ok = QInputDialog.getItem(
+                self, "서지사항을 읽을 PDF",
+                "특허 PDF의 1페이지에서 서지사항을 읽습니다:",
+                choices, 0, False)
+            if not ok:
+                return ""
+            if pick != "다른 파일 선택…":
+                return opened[choices.index(pick)]
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "특허 PDF 선택", "", "PDF (*.pdf)")
+        return path
 
     def _on_alias_requested(self, term_id: str, keyword: str):
         """뷰어에서 검색한 단어를 해당 용어의 선행문헌 표기로 등록."""

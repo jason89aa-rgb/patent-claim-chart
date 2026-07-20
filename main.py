@@ -105,6 +105,36 @@ def _run_claims_worker() -> int:
         return 1
 
 
+def _run_biblio_worker() -> int:
+    """--extract-biblio 워커 모드: 스캔본 서지사항을 OCR로 읽는다.
+
+    청구항 추출과 같은 이유로 별도 프로세스에서 돈다 — PDF 렌더링/OCR이
+    네이티브 크래시해도 GUI는 살아남는다.
+    결과: out_json 경로에 서지사항 dict 저장.
+    """
+    import json
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace",
+                               line_buffering=True)
+    except Exception:
+        pass
+
+    pdf_path = sys.argv[2]
+    out_path = sys.argv[3]
+
+    try:
+        from core.biblio_extractor import extract_biblio
+        biblio = extract_biblio(pdf_path, use_ocr=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(biblio, f, ensure_ascii=False)
+        print("DONE", flush=True)
+        return 0
+    except Exception as e:
+        print(f"ERROR {type(e).__name__}: {e}", flush=True)
+        return 1
+
+
 def _run_selftest_extract() -> int:
     """--selftest-extract 모드: '프리즈 부모가 프리즈 자식을 낳는' 조합 검증.
 
@@ -168,6 +198,9 @@ if __name__ == "__main__":
     # 워커 모드: GUI를 띄우지 않고 청구항 추출만 수행 후 종료
     if len(sys.argv) >= 4 and sys.argv[1] == "--extract-claims":
         sys.exit(_run_claims_worker())
+    # 워커 모드: 스캔본 서지사항 OCR
+    if len(sys.argv) >= 4 and sys.argv[1] == "--extract-biblio":
+        sys.exit(_run_biblio_worker())
     # 프리즈 자기실행 검증 모드 (배포 전 테스트용)
     if len(sys.argv) >= 3 and sys.argv[1] == "--selftest-extract":
         sys.exit(_run_selftest_extract())
