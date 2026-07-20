@@ -61,6 +61,21 @@ class ClaimTerm:
 
 
 @dataclass
+class PriorArtDoc:
+    """선행문헌 한 건의 라벨·서지. path 로 매핑·뷰어 탭과 연결된다.
+
+    공개일/등록일은 적격성 판단(대상 특허 기준일보다 앞서는가)에 쓰인다.
+    """
+    path: str = ""
+    label: str = ""            # D1, D2 … (사용자 수정 가능)
+    title: str = ""
+    pub_number: str = ""       # 공보 번호 (예: US 11,367,770 B2)
+    pub_date: str = ""         # 공개일 YYYY-MM-DD
+    reg_date: str = ""         # 등록일 YYYY-MM-DD
+    note: str = ""
+
+
+@dataclass
 class MappingEntry:
     """하나의 구성요소 <-> 선행문헌 텍스트/도면 매핑"""
     mapping_id: str = ""
@@ -86,6 +101,8 @@ class ProjectData:
     terms: list[ClaimTerm] = field(default_factory=list)
     mappings: list[MappingEntry] = field(default_factory=list)
     doc_paths: list[str] = field(default_factory=list)
+    # 선행문헌 라벨·서지 (D1, D2 … + 공개일 — 적격성 판단용)
+    prior_arts: list[PriorArtDoc] = field(default_factory=list)
     # 종속항 대비표에 인용항 구성요소를 함께 실을지 (All Elements Rule)
     inherit_dependent: bool = True
     created_at: float = field(default_factory=time.time)
@@ -225,6 +242,12 @@ class ProjectManager:
                 if k in MappingEntry.__dataclass_fields__
             }))
 
+        prior_arts = [
+            PriorArtDoc(**{k: v for k, v in d.items()
+                           if k in PriorArtDoc.__dataclass_fields__})
+            for d in raw.get("prior_arts", [])
+        ]
+
         return ProjectData(
             version=raw.get("version", "1.0"),
             case_info=ci,
@@ -232,6 +255,7 @@ class ProjectManager:
             terms=terms,
             mappings=mappings,
             doc_paths=raw.get("doc_paths", []),
+            prior_arts=prior_arts,
             inherit_dependent=raw.get("inherit_dependent", True),
             created_at=raw.get("created_at", time.time()),
             modified_at=raw.get("modified_at", time.time()),

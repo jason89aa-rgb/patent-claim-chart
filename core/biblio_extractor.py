@@ -344,6 +344,11 @@ def _parse_us(text: str) -> dict:
                          r"\s*\d{4})")
     out["application_date"] = parse_date(filed)
 
+    # (65) 공개일 — 선행문헌 적격성 판단의 기준 날짜.
+    # 값이 라벨 다음 줄(들)에 오므로 _block 으로 읽는다.
+    out["publication_date"] = parse_date(_block(
+        text, r"Prior\s+Publication\s+Data", max_lines=2))
+
     # (45) 등록일
     out["registration_date"] = parse_date(_field(
         text, r"Date\s*of\s*Patent\s*:?\s*([A-Z][a-z]{2,4}\s*\.?\s*\d{1,2}"
@@ -418,6 +423,7 @@ def _parse_us(text: str) -> dict:
 
 _KR_LABELS = {
     "registration_number": r"등\s*록\s*번\s*호",
+    "publication_date": r"공\s*개\s*(?:일자|일)",
     "application_number": r"출\s*원\s*번\s*호",
     "application_date": r"출\s*원\s*(?:일자|일)",
     "registration_date": r"등\s*록\s*(?:일자|일)",
@@ -474,6 +480,10 @@ def _parse_de(text: str) -> dict:
         out["registration_date"] = parse_date(_field(
             text, r"\(\s*45\s*\)[^\n]*\n?[^\n]*?([\d]{2}\.[\d]{2}\.[\d]{4})"))
 
+    # (43) Offenlegungstag — 공개일
+    out["publication_date"] = parse_date(_field(
+        text, r"Offenlegungstag\s*:?\s*([\d.\s]{8,12})"))
+
     # (54) Bezeichnung — 제목이 여러 줄로 이어진다
     title = _block(text, r"Bezeichnung\s*:", max_lines=3)
     out["title"] = _tidy(re.sub(r"\xad", "", title))
@@ -529,6 +539,8 @@ def _parse_cn(text: str) -> dict:
         text, r"(?:授权公告号|申请公布号)\s*[:：]?\s*(CN\s*[\d]{6,12}\s*[A-Z]\d?)"))
     out["registration_date"] = parse_date(_block(
         text, r"(?:授权公告日|申请公布日)", max_lines=1))
+    out["publication_date"] = parse_date(_block(
+        text, r"申请公布日", max_lines=1))
 
     pri = _block(text, r"\(\s*30\s*\)\s*优先权数据", max_lines=3)
     out["priority_date"] = parse_date(pri) or out.get("application_date", "")
@@ -594,6 +606,7 @@ def extract_biblio(pdf_path: str, max_pages: int = 2,
         "title": "", "applicant": "", "application_number": "",
         "registration_number": "", "application_date": "",
         "registration_date": "", "priority_date": "",
+        "publication_date": "",
         "family_patents": [], "_source": "",
     }
     if not FITZ_AVAILABLE or not pdf_path:

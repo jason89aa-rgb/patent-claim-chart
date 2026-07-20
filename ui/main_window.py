@@ -19,6 +19,7 @@ from ui.case_info_panel import CaseInfoPanel
 from ui.mapping_widget import MappingDialog, MappingListPanel
 from ui.coverage_panel import CoveragePanel
 from ui.search_panel import SearchPanel
+from ui.prior_art_panel import PriorArtPanel
 from utils.errlog import log_exception
 
 
@@ -115,6 +116,7 @@ class MainWindow(QMainWindow):
         self.pdf_viewer = PDFViewerPanel()
         self.pdf_viewer.mapping_requested.connect(self._on_mapping_requested)
         self.pdf_viewer.alias_requested.connect(self._on_alias_requested)
+        self.pdf_viewer.document_opened.connect(self._on_document_opened)
         self.main_splitter.addWidget(_section(
             "sectionPrior", "선행문헌  ▶",
             "대상 특허와 대비할 선행기술입니다. 문서를 열고 대응 부분을 "
@@ -154,10 +156,17 @@ class MainWindow(QMainWindow):
         self.search_panel.mapping_requested.connect(self._on_mapping_requested)
         self.search_panel.search_requested.connect(self._run_global_search)
 
+        self.prior_art_panel = PriorArtPanel()
+        self.prior_art_panel.changed.connect(self._on_prior_art_edited)
+        self.prior_art_panel.open_requested.connect(
+            self.pdf_viewer.open_document)
+        self.prior_art_panel.reread_requested.connect(self._reread_prior_art)
+
         self.bottom_tabs = QTabWidget()
         self.bottom_tabs.addTab(self.mapping_list_panel, "매핑 목록")
         self.bottom_tabs.addTab(self.coverage_panel, "대응 현황")
         self.bottom_tabs.addTab(self.search_panel, "문헌 통합 검색")
+        self.bottom_tabs.addTab(self.prior_art_panel, "선행문헌 정보")
 
         dock.setWidget(self.bottom_tabs)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
@@ -313,9 +322,14 @@ class MainWindow(QMainWindow):
         self.claim_editor.set_terms(self._pm.data.terms)
         self.claim_editor.load_claims(self._pm.data.claims)
         self.case_info_panel.load(self._pm.data.case_info)
-        for path in self._pm.data.doc_paths:
-            if os.path.exists(path):
-                self.pdf_viewer.open_document(path)
+        # 문서를 여는 동안 문헌별 적격성 경고 모달이 연달아 뜨지 않도록 억제
+        self._loading = True
+        try:
+            for path in self._pm.data.doc_paths:
+                if os.path.exists(path):
+                    self.pdf_viewer.open_document(path)
+        finally:
+            self._loading = False
         self._refresh_mapping_panel()
 
     def _refresh_mapping_panel(self):
@@ -338,6 +352,7 @@ class MainWindow(QMainWindow):
         self.search_panel.set_terms(terms)
         self.pdf_viewer.update_mappings(self._pm.data.mappings,
                                         element_colors, term_colors)
+        self._refresh_prior_art_ui()
         self._update_title()
 
     def _update_title(self):
@@ -355,6 +370,8 @@ class MainWindow(QMainWindow):
     def _on_case_info_changed(self):
         self._pm.mark_dirty()
         self._update_title()
+        # 우선일이 바뀌면 선행문헌 적격성도 다시 판정한다
+        self._refresh_prior_art_ui()
 
     def _on_mapping_changed(self):
         self._pm.mark_dirty()
@@ -766,6 +783,113 @@ class MainWindow(QMainWindow):
         self.bottom_tabs.setCurrentWidget(self.search_panel)
         self.search_panel.query_edit.setFocus()
 
+    # ------------------------------------------ 선행문헌 등록·적격성
+
+    def _base_date_live(self) -> tuple:
+        """기준일 (서지사항 탭의 현재 입력값 기준 — 저장 전 편집도 반영)."""
+        from core.prior_art import subject_base_date
+        vals = self.case_info_panel.current_values()
+
+        class _CI:
+            priority_date = vals.get("priority_date", "")
+            application_date = vals.get("application_date", "")
+        return subject_base_date(_CI)
+
+    def _on_document_opened(self, path: str):
+        """문헌이 열리면 등록부에 올리고 서지·적격성을 자동 확인."""
+        from core.prior_art import ensure_prior_art, eligibility, STATUS_BAD
+
+        doc, created = ensure_prior_art(self._pm.data, path)
+        if created:
+            self._pm.mark_dirty()
+            self._fill_prior_art_biblio(doc, use_ocr=False)
+
+        base, _kind = self._base_date_live()
+        status, detail = eligibility(doc, base)
+        self.status_label.setText(f"{doc.label} 등록 — {status}: {detail}")
+        # 프로젝트 로드 중에는 모달을 띄우지 않는다 (문헌 수만큼 팝업 방지)
+        if created and status == STATUS_BAD and not getattr(
+                self, "_loading", False):
+            QMessageBox.warning(
+                self, "선행문헌 적격성",
+                f"{doc.label} ({os.path.basename(path)})\n\n{detail}\n\n"
+                "이 문헌으로는 무효 주장을 할 수 없습니다. 공개일이 잘못 "
+                "읽혔다면 '선행문헌 정보' 탭에서 고쳐 주세요.")
+        self._refresh_prior_art_ui()
+
+    def _fill_prior_art_biblio(self, doc, use_ocr: bool) -> bool:
+        """문헌 1페이지에서 서지를 읽어 채운다. 성공 여부 반환."""
+        from core.biblio_extractor import extract_biblio, is_scanned
+        from core.text_doc import is_text_doc, doc_title
+
+        if is_text_doc(doc.path):
+            doc.title = doc.title or doc_title(doc.path)
+            return True
+        if not os.path.exists(doc.path):
+            return False
+        try:
+            if use_ocr:
+                from core.biblio_worker import extract_biblio_ocr
+                biblio, err = extract_biblio_ocr(doc.path)
+                if err or not biblio:
+                    QMessageBox.warning(self, "OCR 실패",
+                                        err or "서지를 읽지 못했습니다.")
+                    return False
+            else:
+                if is_scanned(doc.path):
+                    return False          # OCR 은 사용자가 버튼으로 요청
+                biblio = extract_biblio(doc.path)
+        except Exception as e:
+            log_exception(e)
+            return False
+
+        doc.title = biblio.get("title") or doc.title
+        doc.pub_number = biblio.get("registration_number") or doc.pub_number
+        doc.pub_date = biblio.get("publication_date") or doc.pub_date
+        doc.reg_date = biblio.get("registration_date") or doc.reg_date
+        return True
+
+    def _reread_prior_art(self, path: str, use_ocr: bool):
+        """패널의 '서지 다시 읽기' — 읽은 값으로 덮어쓴다."""
+        from core.prior_art import find_prior_art
+        doc = find_prior_art(self._pm.data, path)
+        if doc is None:
+            return
+        if use_ocr:
+            self.status_label.setText("스캔본 OCR 처리 중… (잠시 기다려 주세요)")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            # 다시 읽기는 기존 값을 덮어써야 하므로 비우고 시작
+            doc.title = doc.pub_number = doc.pub_date = doc.reg_date = ""
+            done = self._fill_prior_art_biblio(doc, use_ocr=use_ocr)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if done:
+            self._pm.mark_dirty()
+            self.status_label.setText("서지를 다시 읽었습니다")
+        elif not use_ocr:
+            QMessageBox.information(
+                self, "스캔본",
+                "이 PDF는 텍스트가 없는 스캔본입니다.\n"
+                "'OCR로 읽기' 버튼을 사용해 주세요.")
+        self._refresh_prior_art_ui()
+
+    def _on_prior_art_edited(self):
+        self._pm.mark_dirty()
+        self._refresh_prior_art_ui()
+
+    def _refresh_prior_art_ui(self):
+        """등록부 표·뷰어 탭 라벨·대응 현황 열머리를 갱신."""
+        from core.prior_art import labels_map
+        base, kind = self._base_date_live()
+        self.prior_art_panel.refresh(self._pm.data.prior_arts, base, kind)
+        for doc in self._pm.data.prior_arts:
+            if (doc.label or "").strip():
+                self.pdf_viewer.set_tab_label(
+                    doc.path,
+                    f"{doc.label} · {os.path.basename(doc.path)}")
+        self.coverage_panel.set_doc_labels(labels_map(self._pm.data))
+
     def _show_coverage_tab(self):
         """대응 현황 패널을 열고 앞으로 가져온다."""
         self.mapping_dock.show()
@@ -895,6 +1019,19 @@ class MainWindow(QMainWindow):
             "3항 대비표에 1항 구성요소가 <b>(1항 인용)</b> 표시와 함께 자동으로 "
             "실리고, 1항에 이미 연결해 둔 근거가 그대로 나타납니다. "
             "같은 매핑을 두 번 만들 필요가 없습니다.<br><br>"
+            "<b>선행문헌 적격성</b> (화면 아래 '선행문헌 정보' 탭)<br>"
+            "선행문헌을 열면 공보번호·공개일이 자동으로 읽히고, 대상 특허 "
+            "기준일(우선일, 없으면 출원일)보다 <b>먼저 공개됐는지</b> 판정합니다. "
+            "기준일 이후에 공개된 문헌은 선행문헌 자격이 없어 붉게 표시되고, "
+            "그 문헌을 인용한 채로 내보내면 점검에서 오류로 걸립니다. "
+            "라벨(D1, 갑제3호증 등)과 날짜는 표에서 직접 고칠 수 있고, "
+            "고친 라벨은 대응 현황·보고서에도 그대로 쓰입니다.<br><br>"
+            "<b>자주 나온 단어</b> (매핑 창)<br>"
+            "선행문헌을 드래그하면 매핑 창 위쪽에 그 안에서 자주 나온 단어가 "
+            "칩으로 나옵니다. 도면처럼 부호가 많아도 원하는 단어를 눈으로 "
+            "찾을 필요 없이 칩을 누르면 텍스트 안의 그 단어가 전부 요소 색으로 "
+            "칠해집니다. 등록 용어와 일치하는 단어는 그 색을 미리 입혀 맨 앞에 "
+            "옵니다.<br><br>"
             "<b>문헌 통합 검색</b> (화면 아래 탭 · Ctrl+F)<br>"
             "같은 구성요소를 문헌마다 다르게 부르는 경우"
             "(체결부 / 결합 / 고정 / fastening)를 위한 기능입니다. "

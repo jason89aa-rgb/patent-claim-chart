@@ -1,4 +1,5 @@
 """매핑 연결 다이얼로그 및 매핑 목록 패널."""
+import re
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QTextEdit, QDialogButtonBox,
@@ -21,6 +22,8 @@ INTERPRETATION_DESC = {
     "넓게해석": "Broad — 선행문헌과 겹치도록 넓게 해석 (무효 주장)",
     "좁게해석": "Narrow — 회피 불가하도록 좁게 해석 (침해 주장)",
 }
+
+_HANGUL_CHIP = re.compile(r"[가-힣]")
 
 JUDGMENT_COLORS = {
     "일치":    "#2E862E",
@@ -99,6 +102,10 @@ class MappingDialog(QDialog):
         if not self._terms:
             self.hl_term_combo.addItem("(등록된 요소 없음)", "")
             self.hl_term_combo.setEnabled(False)
+
+        # 자주 나온 단어 칩 — 도면 캡처처럼 부호가 많은 텍스트에서
+        # 원하는 단어를 눈으로 찾는 대신 눌러서 바로 색칠한다.
+        self._build_word_chips(text_layout, extracted_text)
 
         layout.addWidget(text_group)
 
@@ -260,6 +267,98 @@ class MappingDialog(QDialog):
 
     def _term_by_id(self, term_id: str):
         return next((t for t in self._terms if t.term_id == term_id), None)
+
+    def _build_word_chips(self, parent_layout, extracted_text: str):
+        """선택 영역에서 자주 나온 단어를 칩으로 늘어놓는다.
+
+        등록 용어(별칭 포함)와 일치하는 단어는 그 용어 색을 미리 입혀
+        맨 앞에 온다 — 누르면 텍스트 안의 같은 단어가 전부 색칠된다.
+        """
+        from core.term_extractor import frequent_words
+
+        self.word_chip_list = None
+        chips = frequent_words(extracted_text, self._terms, limit=20)
+        if not chips:
+            return
+
+        chip_head = QLabel("자주 나온 단어 — 누르면 그 단어 전체를 색칠:")
+        chip_head.setStyleSheet("color: #666; font-size: 9px;")
+        parent_layout.addWidget(chip_head)
+
+        lst = QListWidget()
+        lst.setFlow(QListWidget.Flow.LeftToRight)
+        lst.setWrapping(True)
+        lst.setResizeMode(QListWidget.ResizeMode.Adjust)
+        lst.setMaximumHeight(66)
+        lst.setSpacing(3)
+        lst.setFont(QFont("맑은 고딕", 8))
+        for word, count, term in chips:
+            item = QListWidgetItem(f"{word} ×{count}" if count > 1 else word)
+            item.setData(Qt.ItemDataRole.UserRole,
+                         (word, term.term_id if term else ""))
+            if term:
+                rgb = tuple(term.color_rgb)
+                item.setBackground(QColor(*rgb, 90))
+                item.setToolTip(f"{term.term_id} '{term.text}' 대응 표기 — "
+                                "누르면 전체를 이 요소 색으로 칠합니다")
+            else:
+                item.setToolTip("누르면 '단어 색칠'에서 고른 요소 색으로 "
+                                "전체를 칠합니다")
+            lst.addItem(item)
+        lst.itemClicked.connect(self._on_word_chip)
+        parent_layout.addWidget(lst)
+        self.word_chip_list = lst
+
+    def _on_word_chip(self, item):
+        """칩 클릭 → 텍스트 안의 그 단어를 전부 요소 색으로."""
+        word, term_id = item.data(Qt.ItemDataRole.UserRole)
+        if term_id:
+            # 용어 매칭 칩이면 색칠 콤보도 그 용어로 맞춘다
+            for i in range(self.hl_term_combo.count()):
+                if self.hl_term_combo.itemData(i) == term_id:
+                    self.hl_term_combo.setCurrentIndex(i)
+                    break
+        term = self._term_by_id(self.hl_term_combo.currentData())
+        if not term:
+            QMessageBox.information(
+                self, "알림",
+                "먼저 청구항 패널에서 매칭 요소를 등록해 주세요.")
+            return
+        self._paint_word_everywhere(word, term)
+
+    def _paint_word_everywhere(self, word: str, term):
+        """텍스트 전체에서 해당 단어(어절 단위)를 요소 색으로 칠한다."""
+        text = self.text_edit.toPlainText()
+        if not word or not text:
+            return
+        # 한글 단어는 뒤에 조사가 붙을 수 있어 뒤쪽 경계를 열어둔다.
+        # 라틴 부호(VDDL)는 앞뒤 모두 막아 HVDDL 을 잡지 않는다.
+        tail = (r"(?![A-Za-z0-9_])" if not _HANGUL_CHIP.search(word[-1])
+                else "")
+        pat = re.compile(
+            r"(?<![A-Za-z0-9_가-힣])" + re.escape(word) + r"s?" + tail,
+            re.IGNORECASE)
+        rgb = tuple(term.color_rgb)
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor(*rgb))
+        fmt.setForeground(QColor(get_text_color(rgb)))
+        fmt.setFontWeight(QFont.Weight.Bold)
+
+        doc = self.text_edit.document()
+        first = None
+        for m in pat.finditer(text):
+            cursor = QTextCursor(doc)
+            cursor.setPosition(m.start())
+            cursor.setPosition(m.end(), QTextCursor.MoveMode.KeepAnchor)
+            cursor.mergeCharFormat(fmt)
+            if first is None:
+                first = m.start()
+        if first is not None:
+            # 첫 히트가 보이도록 스크롤
+            cur = self.text_edit.textCursor()
+            cur.setPosition(first)
+            self.text_edit.setTextCursor(cur)
+            self.text_edit.ensureCursorVisible()
 
     def _apply_term_highlight(self):
         """드래그한 단어에 선택한 요소 색을 적용."""

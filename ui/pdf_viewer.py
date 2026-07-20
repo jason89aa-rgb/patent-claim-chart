@@ -798,6 +798,7 @@ class PDFViewerPanel(QWidget):
     """우측 PDF 뷰어 전체 패널 (여러 문서 탭)."""
     mapping_requested = pyqtSignal(str, int, list, str)
     alias_requested = pyqtSignal(str, str)
+    document_opened = pyqtSignal(str)      # 새 문서가 열림 (정규화 경로)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -903,6 +904,7 @@ class PDFViewerPanel(QWidget):
         idx = self.tab_widget.addTab(viewer, label or os.path.basename(path))
         self.tab_widget.setCurrentIndex(idx)
         self._update_empty_state()
+        self.document_opened.emit(path)
 
     def open_document_dialog(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -1025,6 +1027,16 @@ class PDFViewerPanel(QWidget):
         hits.sort(key=lambda h: (h["doc_label"], h["page"],
                                  round(h["rect"][1], 1), h["rect"][0]))
         return hits
+
+    def set_tab_label(self, path: str, label: str):
+        """탭 제목을 바꾼다 (예: 'D1 · US11367770')."""
+        viewer = self.viewer_for(path)
+        if not viewer or not label:
+            return
+        for i in range(self.tab_widget.count()):
+            if self.tab_widget.widget(i) is viewer:
+                self.tab_widget.setTabText(i, label)
+                return
 
     def viewer_for(self, path: str):
         """경로로 뷰어를 찾는다 (탭은 정규화된 경로로 보관된다)."""

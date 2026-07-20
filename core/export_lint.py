@@ -97,6 +97,41 @@ def lint_project(data) -> list:
             [f"{m.element_id} · {_doc_name(m.doc_path)} p.{m.page + 1}"
              for m in empty_text]))
 
+    # --- 선행문헌 적격성 (기준일 이후 공개 문헌 인용 여부) ----------
+    from core.prior_art import (STATUS_BAD, STATUS_UNKNOWN, eligibility,
+                                find_prior_art, subject_base_date)
+
+    base, base_kind = subject_base_date(data.case_info)
+    used_paths = sorted({m.doc_path for m in mappings if m.doc_path})
+    if used_paths and not base:
+        issues.append(LintIssue(
+            WARN, "대상 특허 기준일이 없어 선행문헌 적격성을 확인 못함",
+            "서지사항 탭에서 우선일(또는 출원일)을 입력하면 각 문헌의 "
+            "공개일과 자동으로 대조합니다."))
+    elif base:
+        bad, unknown = [], []
+        for p in used_paths:
+            doc = find_prior_art(data, p)
+            if doc is None:
+                continue          # 구버전 프로젝트 — 등록 전
+            status, detail = eligibility(doc, base)
+            tag = f"{doc.label or _doc_name(p)} · {detail}"
+            if status == STATUS_BAD:
+                bad.append(tag)
+            elif status == STATUS_UNKNOWN:
+                unknown.append(tag)
+        if bad:
+            issues.append(LintIssue(
+                ERROR, f"기준일 이후에 공개된 선행문헌 인용 {len(bad)}건",
+                f"대상 특허 {base_kind} {base}보다 늦게 공개된 문헌은 "
+                "선행문헌 자격이 없습니다 — 이 근거로는 무효 주장을 할 수 "
+                "없습니다.", bad))
+        if unknown:
+            issues.append(LintIssue(
+                WARN, f"공개일을 확인하지 못한 선행문헌 {len(unknown)}건",
+                "'선행문헌 정보' 탭에서 공개일을 입력하거나 서지를 다시 "
+                "읽어 주세요.", unknown))
+
     # --- 근거 문서 상태 --------------------------------------------
     missing = sorted({m.doc_path for m in mappings
                       if m.doc_path and not os.path.exists(m.doc_path)})

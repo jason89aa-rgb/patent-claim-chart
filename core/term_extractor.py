@@ -265,3 +265,63 @@ def extract_terms_from_claim(claim) -> list[TermCandidate]:
                 if pattern.search(elem.text):
                     cand.element_ids.append(elem.element_id)
     return candidates
+
+
+# ---------------------------------------------------------------- 색칠 후보
+
+# 매핑 창의 '자주 나온 단어' 후보 토큰 (도면 부호 VDDL·CNT8·S1_1 포함)
+_CHIP_TOKEN_RE = re.compile(r"[A-Za-z가-힣][A-Za-z0-9_\-가-힣]*")
+
+
+def frequent_words(text: str, terms: list = None, limit: int = 20) -> list:
+    """선택 영역 텍스트에서 색칠할 만한 단어 후보를 추린다.
+
+    도면 캡처는 원하는 부호 외에 다른 부호가 잔뜩 섞여 나와서
+    눈으로 찾는 게 일이다 — 등록 용어(별칭 포함)와 일치하는 단어를
+    맨 앞에, 나머지는 빈도순으로 늘어놓아 눌러서 고르게 한다.
+
+    반환: [(단어, 등장 횟수, 매칭 ClaimTerm 또는 None), ...]
+    """
+    from utils.term_format import term_texts
+
+    if not (text or "").strip():
+        return []
+
+    out = []
+    taken = set()          # 이미 후보로 올린 표기 (소문자)
+
+    # 1) 등록 용어·별칭이 실제 등장하면 최우선 (용어 색 힌트와 함께)
+    for term in (terms or []):
+        for txt in term_texts(term):
+            low = txt.lower()
+            if low in taken:
+                continue
+            pat = re.compile(
+                r"(?<![A-Za-z0-9_가-힣])" + re.escape(txt) +
+                r"s?(?![A-Za-z0-9_])", re.IGNORECASE)
+            n = len(pat.findall(text))
+            if n:
+                taken.add(low)
+                out.append((txt, n, term))
+
+    # 2) 나머지 토큰을 빈도순으로 (기능어·숫자·용언은 제외)
+    counts: dict = {}
+    forms: dict = {}
+    for tok in _CHIP_TOKEN_RE.findall(text):
+        low = tok.lower()
+        if len(tok) < 2 or low in _STOPWORDS or low in taken:
+            continue
+        if _HANGUL_RE.search(tok):
+            stem = _ko_noun(tok)          # 조사 떼고 서술부 걸러냄
+            if not stem or stem.lower() in taken:
+                continue
+            tok, low = stem, stem.lower()
+        counts[low] = counts.get(low, 0) + 1
+        forms.setdefault(low, tok)
+
+    rest = sorted(counts.items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0]))
+    for low, n in rest:
+        if len(out) >= limit:
+            break
+        out.append((forms[low], n, None))
+    return out[:limit]

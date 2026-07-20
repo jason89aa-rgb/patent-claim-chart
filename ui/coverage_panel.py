@@ -50,7 +50,20 @@ class CoveragePanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._cells: dict = {}      # (row, col) -> [MappingEntry, ...]
+        self._doc_labels: dict = {} # {정규화 경로: "D1"}
         self._setup_ui()
+
+    def set_doc_labels(self, labels: dict):
+        """선행문헌 라벨(D1 …)을 열 머리말에 붙인다."""
+        self._doc_labels = labels or {}
+        if self._docs:
+            self._rebuild()
+
+    def _doc_header(self, path: str) -> str:
+        label = self._doc_labels.get(
+            os.path.normpath(os.path.abspath(path)) if path else "")
+        name = doc_label(path)
+        return f"{label} · {name}" if label else name
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -159,7 +172,7 @@ class CoveragePanel(QWidget):
         self.table.clear()
         self.table.setColumnCount(1 + len(self._docs))
         self.table.setHorizontalHeaderLabels(
-            ["구성요소"] + [doc_label(p) for p in self._docs])
+            ["구성요소"] + [self._doc_header(p) for p in self._docs])
         self.table.setRowCount(len(rows))
 
         by_elem_doc = {}

@@ -22,6 +22,7 @@ from core.region_capture import (capture_for_mappings,
                                  group_mappings_by_region,
                                  build_region_index)
 from core.claim_scope import ScopeElement, scope_elements, scope_mappings
+from core.prior_art import labels_map, norm_path
 from core.text_doc import is_text_doc
 from utils.term_format import split_by_terms, evidence_chunks
 from utils.errlog import log_exception
@@ -411,11 +412,13 @@ def _caseinfo_slide(prs, data: ProjectData):
           size=19.5, bold=True, color=INK, condensed=True)
     _hairline(s, 10.24, 2.74, 8.94)
 
+    doc_tags = labels_map(data)
     y = 2.75
     for i, dp in enumerate(docs, 1):
         n_map = sum(1 for m in data.mappings if m.doc_path == dp)
         _rect(s, 10.24, y, 2.08, 0.65, fill=LABEL_BG)
-        _text(s, 10.47, y + 0.13, 1.85, 0.45, f"D{i}",
+        _text(s, 10.47, y + 0.13, 1.85, 0.45,
+              doc_tags.get(norm_path(dp)) or f"D{i}",
               size=18, bold=True, color=DEEP, condensed=True)
         _text(s, 12.55, y + 0.13, 5.0, 0.45, _doc_label(dp),
               size=18.75, color=INK)
@@ -795,7 +798,7 @@ def _type_b_slide(prs, claim: Claim, mappings: list, doc_label: str,
 
 # ------------------------------------------------------------ Type C
 def _type_c_slide(prs, claim: Claim, all_mappings: list, doc_paths: list,
-                  terms: list, scope: list = None):
+                  terms: list, scope: list = None, doc_tags: dict = None):
     """구성요소 × 선행문헌 대응 매트릭스."""
     s = _slide(prs)
     _header(s, "대응 현황 요약",
@@ -820,9 +823,12 @@ def _type_c_slide(prs, claim: Claim, all_mappings: list, doc_paths: list,
           size=18, bold=True, color=INK, condensed=True)
     _text(s, text_x, 2.23, text_w, 0.43, "청구항 내용",
           size=18, bold=True, color=INK, condensed=True)
+    doc_tags = doc_tags or {}
     for i, lab in enumerate(labels[:2]):
+        dp = doc_paths[i] if i < len(doc_paths) else ""
         _text(s, doc_x0 + i * doc_w, 2.23, doc_w - 0.2, 0.43,
-              f"D{i+1}", size=18, bold=True, color=INK, condensed=True)
+              doc_tags.get(norm_path(dp)) or f"D{i+1}",
+              size=18, bold=True, color=INK, condensed=True)
     _text(s, verdict_x, 2.23, 2.6, 0.43, "판단",
           size=18, bold=True, color=INK, condensed=True)
     _hairline(s, 0.84, 2.76, 18.32)
@@ -955,7 +961,7 @@ def export_pptx(data: ProjectData, output_path: str,
 
             if template_type == "C":
                 _type_c_slide(prs, claim, claim_maps, doc_paths, terms,
-                              scope=claim_scope)
+                              scope=claim_scope, doc_tags=labels_map(data))
                 continue
 
             if template_type == "B":
