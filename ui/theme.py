@@ -10,8 +10,10 @@ _LIGHT = {
     "BORDER": "#E1E6EA",
     "TEXT": "#1E232B",
     "SUB": "#69737E",
-    "ACCENT": "#2AC1BC",       # 민트 포인트
+    "ACCENT": "#2AC1BC",       # 민트 포인트 (대상 특허 쪽)
     "ACCENT_SOFT": "#E2F6F5",  # 민트 연한 배경
+    "PRIOR": "#5B7FA6",        # 남색 포인트 (선행문헌 쪽)
+    "PRIOR_SOFT": "#E8EEF5",   # 남색 연한 배경
     "HANDLE": "#C9D2D9",       # 스크롤바
 }
 
@@ -24,6 +26,8 @@ _DARK = {
     "SUB": "#97A1AB",
     "ACCENT": "#2AC1BC",
     "ACCENT_SOFT": "#1D3A38",
+    "PRIOR": "#7FA3CC",
+    "PRIOR_SOFT": "#242E3A",
     "HANDLE": "#3D434B",
 }
 
@@ -132,6 +136,19 @@ QToolTip { background: #2A2E35; color: #F0F2F4; border: none;
 QMessageBox { background: @SURFACE; }
 QHeaderView::section { background: @SURFACE2; color: @SUB; border: none;
                        padding: 4px; }
+
+/* 좌/우 섹션 구분 — 왼쪽은 대상 특허, 오른쪽은 선행문헌 */
+QFrame#sectionSubject { background: @ACCENT_SOFT; border: none;
+                        border-left: 4px solid @ACCENT;
+                        border-radius: 8px; }
+QFrame#sectionPrior { background: @PRIOR_SOFT; border: none;
+                      border-left: 4px solid @PRIOR;
+                      border-radius: 8px; }
+QLabel#sectionTitleSubject { color: @ACCENT; font-size: 13px;
+                             font-weight: bold; background: transparent; }
+QLabel#sectionTitlePrior { color: @PRIOR; font-size: 13px;
+                           font-weight: bold; background: transparent; }
+QLabel#sectionDesc { color: @SUB; font-size: 11px; background: transparent; }
 """
 
 

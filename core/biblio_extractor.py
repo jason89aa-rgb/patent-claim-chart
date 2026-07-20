@@ -102,7 +102,14 @@ def _front_page_text(page) -> str:
 
 def _field(text: str, pattern: str, group: int = 1) -> str:
     m = re.search(pattern, text, re.IGNORECASE)
-    return (m.group(group) or "").strip() if m else ""
+    val = (m.group(group) or "").strip() if m else ""
+    # 스캔본 OCR은 INID 코드만 한 덩어리로 뱉는 경우가 있어
+    # '(54)' 다음 값으로 다음 코드 '(71)'이 잡히곤 한다
+    return "" if _INID_ONLY.match(val) else val
+
+
+# 값이 아니라 INID 코드 자체인 경우 ('(71)', '( 30 )')
+_INID_ONLY = re.compile(r"^\(\s*[\d*]{1,3}\s*\)\s*$")
 
 
 # 다음 INID 항목의 시작 — 값 블록의 끝을 판단한다
@@ -237,6 +244,78 @@ def _org_names(raw: str, extra_split: str = "") -> str:
 
 # ------------------------------------------------------------ US 등록특허
 
+# 제목으로 오인하기 쉬운 공보 상용구 (대문자 줄이지만 명칭이 아니다)
+_US_NOT_TITLE = re.compile(
+    r"UNITED\s+STATES|PATENT\s+NO|DATE\s+OF\s+PATENT|REFERENCES?\s+CITED|"
+    r"PATENT\s+DOCUMENTS|OTHER\s+PUBLICATIONS|ABSTRACT|PRIOR\s+PUBLICATION|"
+    r"APPLICATION\s+DATA|INT\.?\s*CL|U\.?S\.?\s*CL|CLASSIFICATION|"
+    r"PRIMARY\s+EXAMINER|ATTORNEY|AGENT|DRAWING\s+SHEETS|CLAIMS|"
+    r"^\s*\(|^\s*\d+\s*$|CONTINUED", re.IGNORECASE)
+
+
+def _us_title_fallback(text: str) -> str:
+    """스캔본 OCR용 제목 추출.
+
+    OCR이 INID 코드를 값과 분리해 버리면 '(54) 다음 텍스트' 방식이
+    통하지 않는다. 이럴 때는 'Applicant:' 앞에 나오는 대문자 줄을 쓴다
+    — 공보에서 명칭은 관례적으로 전부 대문자로 인쇄된다.
+    """
+    head = text
+    m = re.search(r"Applicant\s*:", text, re.IGNORECASE)
+    if m:
+        head = text[:m.start()]
+
+    for line in head.split("\n"):
+        line = line.strip()
+        if not (8 <= len(line) <= 150) or ":" in line:
+            continue
+        if _US_NOT_TITLE.search(line):
+            continue
+        letters = [c for c in line if c.isalpha()]
+        if len(letters) < 6:
+            continue
+        # 명칭은 대부분 대문자로 인쇄된다
+        if sum(1 for c in letters if c.isupper()) / len(letters) < 0.85:
+            continue
+        return line
+    return ""
+
+
+def _us_related_dates(text: str) -> tuple:
+    """(60)(63) 관련 출원 — 우선일 후보와 출원번호를 모은다.
+
+    계속출원(continuation)·분할출원은 모출원/PCT 출원일이 실제 최선일이다.
+    예: 'Continuation of application No. 17/638,836, filed as application
+         No. PCT/CN2021/075289 on Feb. 4, 2021' → 2021-02-04
+    """
+    dates, nums = [], []
+    m = re.search(r"(?:Related\s+U\.?S\.?\s+Application\s+Data|"
+                  r"Provisional\s+application\s+No|"
+                  r"Continuation\s+of\s+application|"
+                  r"Division\s+of\s+application)", text, re.IGNORECASE)
+    if not m:
+        return dates, nums
+
+    chunk = text[m.start():]
+    # 다음 섹션 전까지만 (OCR은 구획선을 잃어버린다)
+    stop = re.search(r"Int\.?\s*Cl|U\.?S\.?\s*Cl|Field\s+of\s+Classification|"
+                     r"\n\s*\(\s*5[12]\s*\)", chunk, re.IGNORECASE)
+    if stop:
+        chunk = chunk[:stop.start()]
+
+    for dm in _DATE_EN.finditer(chunk):
+        d = parse_date(dm.group(0))
+        if d:
+            dates.append(d)
+    for pm in re.finditer(r"\b(\d{2}\s*/\s*[\d,]{3,10})\b", chunk):
+        num = _clean_num(pm.group(1))
+        kind = "가출원" if num.startswith(("60", "61", "62", "63")) else "모출원"
+        nums.append(f"US {num} ({kind})")
+    for pm in re.finditer(r"\b(PCT/[A-Z]{2}\d{4}/\d{4,8})\b", chunk):
+        nums.append(pm.group(1))
+    return dates, nums
+
+
 def _parse_us(text: str) -> dict:
     out = {}
 
@@ -269,6 +348,12 @@ def _parse_us(text: str) -> dict:
     out["registration_date"] = parse_date(_field(
         text, r"Date\s*of\s*Patent\s*:?\s*([A-Z][a-z]{2,4}\s*\.?\s*\d{1,2}"
               r"\s*,\s*\d{4})"))
+    if not out["registration_date"]:
+        # 스캔본 OCR은 라벨과 값이 떨어진다. 등록일은 관례상 특허번호
+        # 바로 아래에 인쇄되므로 번호 다음에 오는 날짜를 쓴다.
+        out["registration_date"] = parse_date(_field(
+            text, r"US\s*[\d,]{7,15}\s*[AB]\d?\s*\n\s*\*?\s*"
+                  r"([A-Z][a-z]{2,4}\s*\.?\s*\d{1,2}\s*,\s*\d{4})"))
 
     # (54) 발명의 명칭 — 대문자 제목 줄
     title = _field(text, r"\(\s*54\s*\)\s*([^\n]+)")
@@ -276,6 +361,8 @@ def _parse_us(text: str) -> dict:
         # 컬럼 재구성 순서에 따라 (12) 다음 줄에 오기도 한다
         title = _field(text, r"United\s+States\s+Patent[^\n]*\n[^\n]*\n"
                              r"\(\s*54\s*\)\s*([^\n]+)")
+    if not title:
+        title = _us_title_fallback(text)
     out["title"] = _tidy(title)
 
     # (71)/(73) 출원인 — 법인명이 다음 줄로 이어지므로 2줄까지 붙여 읽는다
@@ -313,8 +400,16 @@ def _parse_us(text: str) -> dict:
             if d:
                 dates.append(d)
 
+    # (63) 계속·분할출원: 모출원/PCT 출원일이 실제 최선일
+    rel_dates, rel_nums = _us_related_dates(text)
+    dates += rel_dates
+    for num in rel_nums:
+        if num not in priorities:
+            priorities.append(num)
+
     out["family_patents"] = priorities
     # 우선일 = 가장 이른 우선권 주장일 (없으면 출원일)
+    dates = [d for d in dates if d]
     out["priority_date"] = min(dates) if dates else out["application_date"]
     return out
 

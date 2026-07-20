@@ -23,6 +23,39 @@ from utils.errlog import log_exception
 from ui.theme import build_style
 
 
+def _section(style_id: str, title: str, desc: str, body: QWidget) -> QWidget:
+    """섹션 머리말(제목 + 설명)을 붙인 패널을 만든다.
+
+    왼쪽(대상 특허)과 오른쪽(선행문헌)이 무엇을 넣는 자리인지
+    한눈에 구분되도록 색 띠와 안내문을 얹는다.
+    """
+    from PyQt6.QtWidgets import QFrame
+
+    header = QFrame()
+    header.setObjectName(style_id)
+    head_lay = QVBoxLayout(header)
+    head_lay.setContentsMargins(12, 7, 12, 7)
+    head_lay.setSpacing(1)
+
+    kind = "Subject" if style_id == "sectionSubject" else "Prior"
+    title_label = QLabel(title)
+    title_label.setObjectName("sectionTitle" + kind)
+    head_lay.addWidget(title_label)
+
+    desc_label = QLabel(desc)
+    desc_label.setObjectName("sectionDesc")
+    desc_label.setWordWrap(True)
+    head_lay.addWidget(desc_label)
+
+    panel = QWidget()
+    lay = QVBoxLayout(panel)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(6)
+    lay.addWidget(header)
+    lay.addWidget(body, stretch=1)
+    return panel
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -57,7 +90,7 @@ class MainWindow(QMainWindow):
         # 메인 스플리터
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 좌측: 사건정보 탭 + 청구항 에디터
+        # 좌측: 대상 특허 (검토 대상) — 청구항 + 서지사항
         left_tabs = QTabWidget()
         left_tabs.setMinimumWidth(420)
 
@@ -69,15 +102,21 @@ class MainWindow(QMainWindow):
         self.case_info_panel.changed.connect(self._on_case_info_changed)
         self.case_info_panel.biblio_import_requested.connect(
             self._import_biblio)
-        left_tabs.addTab(self.case_info_panel, "사건정보")
+        left_tabs.addTab(self.case_info_panel, "서지사항")
 
-        self.main_splitter.addWidget(left_tabs)
+        self.main_splitter.addWidget(_section(
+            "sectionSubject", "◀  대상 특허",
+            "무효·침해를 검토할 특허입니다. 청구항을 구성요소로 나누고 "
+            "서지사항을 입력하세요.", left_tabs))
 
-        # 우측: PDF 뷰어
+        # 우측: 선행문헌 (대비 자료)
         self.pdf_viewer = PDFViewerPanel()
         self.pdf_viewer.mapping_requested.connect(self._on_mapping_requested)
         self.pdf_viewer.alias_requested.connect(self._on_alias_requested)
-        self.main_splitter.addWidget(self.pdf_viewer)
+        self.main_splitter.addWidget(_section(
+            "sectionPrior", "선행문헌  ▶",
+            "대상 특허와 대비할 선행기술입니다. 문서를 열고 대응 부분을 "
+            "드래그해 왼쪽 구성요소와 연결하세요.", self.pdf_viewer))
 
         self.main_splitter.setSizes([500, 1100])
         self.main_splitter.setStretchFactor(0, 0)
