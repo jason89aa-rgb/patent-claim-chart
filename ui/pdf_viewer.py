@@ -21,6 +21,25 @@ from utils.term_format import term_texts
 from ui.text_viewer import TextDocumentViewer, parse_keywords
 
 
+def _snippet(body: str, start: int, end: int, span: int = 45) -> str:
+    """검색 결과 미리보기 — 히트 앞뒤 문맥을 한 줄로."""
+    left = max(0, start - span)
+    right = min(len(body), end + span)
+    text = body[left:right].replace("\n", " ").strip()
+    return ("… " if left > 0 else "") + text + (" …" if right < len(body) else "")
+
+
+def _page_snippet(page, rect) -> str:
+    """PDF 히트가 있는 줄을 문맥으로 뽑는다."""
+    try:
+        band = fitz.Rect(page.rect.x0, rect.y0 - 2,
+                         page.rect.x1, rect.y1 + 2)
+        text = page.get_textbox(band) or ""
+    except Exception:
+        return ""
+    return " ".join(text.split())[:160]
+
+
 class PageCanvas(QLabel):
     """PDF 단일 페이지 렌더링 + 드래그 선택."""
     selection_made = pyqtSignal(list, str)
@@ -836,6 +855,69 @@ class PDFViewerPanel(QWidget):
 
     def get_open_paths(self) -> list[str]:
         return list(self._viewers.keys())
+
+    def search_all(self, keywords: list, limit_per_doc: int = 300) -> list:
+        """열려 있는 모든 문서에서 키워드를 찾는다.
+
+        반환: [{doc_path, doc_label, page, rect, keyword, context}, ...]
+        rect 는 PDF면 좌표, 텍스트 문서면 [start, end, 0, 0] 문자 오프셋.
+        """
+        kws = [k for k in (keywords or []) if (k or "").strip()]
+        if not kws:
+            return []
+
+        hits = []
+        for path, viewer in self._viewers.items():
+            label = doc_title(path) if is_text_doc(path) \
+                else os.path.splitext(os.path.basename(path))[0]
+            found = 0
+            if isinstance(viewer, TextDocumentViewer):
+                body = viewer._text or ""
+                low = body.lower()
+                for kw in kws:
+                    k = kw.lower()
+                    pos = low.find(k)
+                    while pos != -1 and found < limit_per_doc:
+                        hits.append({
+                            "doc_path": path, "doc_label": label, "page": 0,
+                            "rect": [pos, pos + len(kw), 0, 0], "keyword": kw,
+                            "context": _snippet(body, pos, pos + len(kw)),
+                        })
+                        found += 1
+                        pos = low.find(k, pos + len(k))
+                continue
+
+            doc = getattr(viewer, "_doc", None)
+            if doc is None:
+                continue
+            try:
+                n_pages = len(doc)
+            except Exception:
+                continue
+            for pno in range(n_pages):
+                if found >= limit_per_doc:
+                    break
+                try:
+                    page = doc[pno]
+                except Exception:
+                    continue
+                for kw in kws:
+                    try:
+                        rects = page.search_for(kw)
+                    except Exception:
+                        continue
+                    for r in rects:
+                        if found >= limit_per_doc:
+                            break
+                        hits.append({
+                            "doc_path": path, "doc_label": label, "page": pno,
+                            "rect": [r.x0, r.y0, r.x1, r.y1], "keyword": kw,
+                            "context": _page_snippet(page, r),
+                        })
+                        found += 1
+        hits.sort(key=lambda h: (h["doc_label"], h["page"],
+                                 round(h["rect"][1], 1), h["rect"][0]))
+        return hits
 
     def viewer_for(self, path: str):
         """경로로 뷰어를 찾는다 (탭은 정규화된 경로로 보관된다)."""

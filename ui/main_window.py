@@ -18,6 +18,7 @@ from ui.pdf_viewer import PDFViewerPanel
 from ui.case_info_panel import CaseInfoPanel
 from ui.mapping_widget import MappingDialog, MappingListPanel
 from ui.coverage_panel import CoveragePanel
+from ui.search_panel import SearchPanel
 from utils.errlog import log_exception
 
 
@@ -148,9 +149,15 @@ class MainWindow(QMainWindow):
         self.coverage_panel.jump_requested.connect(self._jump_to_mapping)
         self.coverage_panel.inherit_changed.connect(self._on_panel_inherit)
 
+        self.search_panel = SearchPanel()
+        self.search_panel.jump_requested.connect(self._jump_to_mapping)
+        self.search_panel.mapping_requested.connect(self._on_mapping_requested)
+        self.search_panel.search_requested.connect(self._run_global_search)
+
         self.bottom_tabs = QTabWidget()
         self.bottom_tabs.addTab(self.mapping_list_panel, "매핑 목록")
         self.bottom_tabs.addTab(self.coverage_panel, "대응 현황")
+        self.bottom_tabs.addTab(self.search_panel, "문헌 통합 검색")
 
         dock.setWidget(self.bottom_tabs)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
@@ -226,6 +233,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.dock_action)
         self._add_action(view_menu, "구성요소별 대응 현황 보기",
                          self._show_coverage_tab)
+        self._add_action(view_menu, "문헌 통합 검색 보기",
+                         self._show_search_tab, "Ctrl+F")
         view_menu.addSeparator()
         self._add_action(view_menu, "다크모드 전환", self._toggle_theme)
 
@@ -326,6 +335,7 @@ class MainWindow(QMainWindow):
         terms = self.claim_editor.get_terms()
         term_colors = {t.term_id: tuple(t.color_rgb) for t in terms}
         self.pdf_viewer.set_terms(terms)
+        self.search_panel.set_terms(terms)
         self.pdf_viewer.update_mappings(self._pm.data.mappings,
                                         element_colors, term_colors)
         self._update_title()
@@ -731,6 +741,31 @@ class MainWindow(QMainWindow):
             "내보내기 전 점검을 사용합니다" if on
             else "내보내기 전 점검을 건너뜁니다")
 
+    def _run_global_search(self, keywords: list):
+        """열려 있는 모든 선행문헌에서 한 번에 찾는다."""
+        if not self.pdf_viewer.get_open_paths():
+            QMessageBox.information(
+                self, "알림", "먼저 선행문헌을 열어 주세요.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            hits = self.pdf_viewer.search_all(keywords)
+        except Exception as e:
+            log_exception(e)
+            hits = []
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.search_panel.show_results(hits, keywords)
+        self.status_label.setText(
+            f"통합 검색: {len(hits)}건" if hits else "통합 검색 결과 없음")
+
+    def _show_search_tab(self):
+        """문헌 통합 검색 패널을 열고 앞으로 가져온다."""
+        self.mapping_dock.show()
+        self.mapping_dock.raise_()
+        self.bottom_tabs.setCurrentWidget(self.search_panel)
+        self.search_panel.query_edit.setFocus()
+
     def _show_coverage_tab(self):
         """대응 현황 패널을 열고 앞으로 가져온다."""
         self.mapping_dock.show()
@@ -860,6 +895,12 @@ class MainWindow(QMainWindow):
             "3항 대비표에 1항 구성요소가 <b>(1항 인용)</b> 표시와 함께 자동으로 "
             "실리고, 1항에 이미 연결해 둔 근거가 그대로 나타납니다. "
             "같은 매핑을 두 번 만들 필요가 없습니다.<br><br>"
+            "<b>문헌 통합 검색</b> (화면 아래 탭 · Ctrl+F)<br>"
+            "같은 구성요소를 문헌마다 다르게 부르는 경우"
+            "(체결부 / 결합 / 고정 / fastening)를 위한 기능입니다. "
+            "용어를 고르면 등록해 둔 표기를 모두 넣어 <b>열려 있는 모든 "
+            "선행문헌을 한 번에</b> 찾습니다. 결과를 한 번 클릭하면 그 위치로 "
+            "이동하고, 두 번 클릭하면 그 자리로 매핑을 만듭니다.<br><br>"
             "<b>내보내기 전 점검</b> (편집 메뉴)<br>"
             "근거 없는 구성요소, 균등론인데 논거가 빈 매핑, 파일이 사라진 "
             "선행문헌 등을 내보내기 직전에 알려줍니다."

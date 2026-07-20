@@ -11,7 +11,7 @@ from PyQt6.QtGui import (QColor, QFont, QIcon, QPixmap, QTextCharFormat,
                          QTextCursor)
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QComboBox, QTextEdit, QMessageBox, QMenu
+    QComboBox, QTextEdit, QMessageBox, QMenu, QCheckBox
 )
 
 from core.project import MappingEntry
@@ -57,6 +57,31 @@ def _sentence_bounds(text: str, start: int, end: int) -> tuple:
     while left < len(text) and text[left] in " \t\n":
         left += 1
     return left, max(right, left)
+
+
+class _SelectEdit(QTextEdit):
+    """드래그로 선택을 마치면 알려주는 읽기 전용 편집기.
+
+    PDF 뷰어가 드래그를 놓는 순간 매핑 창을 띄우므로, 텍스트 문서도
+    똑같이 동작해야 한다 (버튼을 따로 누르게 하면 흐름이 끊긴다).
+    """
+    drag_finished = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dragging = False
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        super().mouseReleaseEvent(e)
+        if self._dragging and e.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            if self.textCursor().hasSelection():
+                self.drag_finished.emit()
 
 
 class TextDocumentViewer(QWidget):
@@ -108,6 +133,13 @@ class TextDocumentViewer(QWidget):
         self.map_btn.clicked.connect(self._map_selection)
         bar.addWidget(self.map_btn)
 
+        self.auto_map_check = QCheckBox("드래그하면 바로 매핑")
+        self.auto_map_check.setChecked(True)
+        self.auto_map_check.setToolTip(
+            "PDF처럼 드래그를 놓는 순간 매핑 창이 열립니다.\n"
+            "본문을 읽거나 복사만 할 때는 꺼두세요.")
+        bar.addWidget(self.auto_map_check)
+
         bar.addStretch()
 
         self.search_input = QLineEdit()
@@ -147,7 +179,8 @@ class TextDocumentViewer(QWidget):
             bar.addWidget(w)
         layout.addLayout(bar)
 
-        self.editor = QTextEdit()
+        self.editor = _SelectEdit()
+        self.editor.drag_finished.connect(self._on_drag_finished)
         self.editor.setReadOnly(True)
         self.editor.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         font = QFont("맑은 고딕", 11)
@@ -165,6 +198,18 @@ class TextDocumentViewer(QWidget):
     def _on_selection_changed(self):
         c = self.editor.textCursor()
         self.map_btn.setEnabled(c.hasSelection())
+
+    def _on_drag_finished(self):
+        """드래그로 문장을 고르면 바로 매핑 창을 띄운다 (PDF와 동일).
+
+        '자동 매핑 창' 체크를 끄면 버튼으로만 연다 — 본문을 읽거나
+        복사할 때 창이 뜨는 게 거슬릴 수 있어서다.
+        """
+        if not self.auto_map_check.isChecked():
+            return
+        start, end = self._selected_range()
+        if len((self._text[start:end] or "").strip()) >= 2:
+            self._map_selection()
 
     def _selected_range(self) -> tuple:
         c = self.editor.textCursor()
