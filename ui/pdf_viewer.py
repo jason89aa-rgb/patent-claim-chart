@@ -15,8 +15,10 @@ from PyQt6.QtGui import (QImage, QPixmap, QPainter, QPen, QColor,
                           QBrush, QFont, QCursor, QWheelEvent, QIcon)
 
 from core.project import MappingEntry, ClaimElement
+from core.text_doc import is_text_doc, doc_title
 from utils.color_utils import rgb_to_hex
 from utils.term_format import term_texts
+from ui.text_viewer import TextDocumentViewer, parse_keywords
 
 
 class PageCanvas(QLabel):
@@ -462,16 +464,13 @@ class DocumentViewer(QWidget):
         (197, 225, 165),  # 연두
     ]
 
-    @staticmethod
-    def _parse_keywords(query: str) -> list:
-        """쉼표가 있으면 쉼표 기준(구문 검색 가능), 없으면 공백 기준."""
-        if "," in query or ";" in query:
-            parts = re_split = []
-            for chunk in query.replace(";", ",").split(","):
-                if chunk.strip():
-                    parts.append(chunk.strip())
-            return parts
-        return [w for w in query.split() if w.strip()]
+    def _parse_keywords(self, query: str) -> list:
+        """쉼표 기준 구문 검색 + 등록된 여러 단어 용어는 한 덩어리로 유지.
+
+        'host material'처럼 두 단어가 합쳐져 하나의 구성요소인 용어를
+        host / material로 쪼개 검색하면 material만 따로 색칠된다.
+        """
+        return parse_keywords(query, self._terms)
 
     def set_terms(self, terms: list):
         """프로젝트 매칭 용어 리스트(참조)를 설정."""
@@ -692,6 +691,7 @@ class PDFViewerPanel(QWidget):
         self.empty_label = QLabel(
             "선행문헌 (PDF/이미지)을 열어주세요\n\n"
             "1. 위의 '문서 열기' 버튼 클릭\n"
+            "   (PDF가 없으면 '텍스트 붙여넣기'로 명세서 본문을 붙여넣어도 됩니다)\n"
             "2. PDF 또는 이미지 파일 선택\n"
             "3. 문서에서 영역을 마우스로 드래그\n"
             "4. 팝업에서 청구항 구성요소와 매핑\n\n"
@@ -735,7 +735,12 @@ class PDFViewerPanel(QWidget):
                     self.tab_widget.setCurrentIndex(i)
                     return
 
-        viewer = DocumentViewer(path, use_ocr=self._use_ocr)
+        if is_text_doc(path):
+            # 붙여넣은 텍스트는 PDF로 변환하지 않고 텍스트 그대로 보여준다
+            viewer = TextDocumentViewer(path)
+            label = label or doc_title(path)
+        else:
+            viewer = DocumentViewer(path, use_ocr=self._use_ocr)
         viewer.mapping_requested.connect(self.mapping_requested)
         viewer.alias_requested.connect(self.alias_requested)
         viewer.set_terms(self._terms)
@@ -748,7 +753,8 @@ class PDFViewerPanel(QWidget):
         from PyQt6.QtWidgets import QFileDialog
         paths, _ = QFileDialog.getOpenFileNames(
             self, "선행문헌 열기", "",
-            "문서 파일 (*.pdf *.png *.jpg *.jpeg *.tiff *.bmp);;PDF (*.pdf);;이미지 (*.png *.jpg *.jpeg)"
+            "문서 파일 (*.pdf *.txt *.png *.jpg *.jpeg *.tiff *.bmp);;"
+            "PDF (*.pdf);;텍스트 (*.txt);;이미지 (*.png *.jpg *.jpeg)"
         )
         for p in paths:
             self.open_document(p)
@@ -756,7 +762,7 @@ class PDFViewerPanel(QWidget):
     def open_pasted_text_dialog(self):
         """명세서 텍스트를 붙여넣어 문서 탭으로 연다."""
         from ui.paste_text_dialog import PasteTextDialog
-        from core.text_doc import make_text_pdf
+        from core.text_doc import save_text_doc
 
         dlg = PasteTextDialog(self)
         if dlg.exec() != dlg.DialogCode.Accepted:
@@ -764,10 +770,10 @@ class PDFViewerPanel(QWidget):
         title, text = dlg.get_result()
         if not text.strip():
             return
-        path = make_text_pdf(text, title)
+        path = save_text_doc(text, title)
         if not path:
             QMessageBox.warning(self, "오류",
-                                "텍스트를 문서로 변환하지 못했습니다.")
+                                "텍스트를 문서로 저장하지 못했습니다.")
             return
         self.open_document(path, label=title or "붙여넣은 명세서")
 
@@ -783,7 +789,7 @@ class PDFViewerPanel(QWidget):
 
     def _close_tab(self, index: int):
         widget = self.tab_widget.widget(index)
-        if isinstance(widget, DocumentViewer):
+        if isinstance(widget, (DocumentViewer, TextDocumentViewer)):
             path = widget.doc_path
             widget.close_doc()
             self._viewers.pop(path, None)

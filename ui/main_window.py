@@ -358,7 +358,12 @@ class MainWindow(QMainWindow):
         self.pdf_viewer.open_document(doc_path)
         # 해당 뷰어로 페이지 이동 (viewer에 public api 추가 필요)
         viewer = self.pdf_viewer._viewers.get(doc_path)
-        if viewer:
+        if not viewer:
+            return
+        if hasattr(viewer, "goto_offset"):   # 텍스트 문서: rect = 문자 오프셋
+            r = list(rect or [0, 0, 0, 0])
+            viewer.goto_offset(int(r[0]), int(r[1]))
+        else:
             viewer._goto_page(page)
 
     # ------------------------------------------ Project CRUD

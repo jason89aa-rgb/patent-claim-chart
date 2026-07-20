@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 
+from core.text_doc import is_text_doc
 from utils.term_format import term_texts
 
 try:
@@ -111,6 +112,9 @@ def capture_region(doc_path: str, page_index: int, rect: list,
     반환값: PNG 경로 (실패 시 None)
     """
     if not FITZ_AVAILABLE or not os.path.exists(doc_path):
+        return None
+    # 붙여넣은 텍스트 문서는 도면이 없다 (rect는 문자 오프셋)
+    if is_text_doc(doc_path):
         return None
 
     highlights = highlights or []
@@ -294,7 +298,15 @@ def group_mappings_by_region(mappings: list) -> dict:
     for m in mappings:
         rect = list(m.rect)
         placed = False
+        # 텍스트 문서의 rect는 문자 오프셋이라 좌표 겹침 판정이 무의미하다
+        # → 완전히 같은 구간일 때만 묶는다
         for c in clusters:
+            if is_text_doc(m.doc_path):
+                if c[0] == m.doc_path and c[2] == rect:
+                    c[3].append(m)
+                    placed = True
+                    break
+                continue
             if (c[0] == m.doc_path and c[1] == m.page
                     and _rects_similar(c[2], rect)):
                 c[2] = _union_rect([c[2], rect])

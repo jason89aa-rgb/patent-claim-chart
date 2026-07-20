@@ -21,6 +21,7 @@ from core.project import ProjectData, CaseInfo, Claim, MappingEntry
 from core.region_capture import (capture_for_mappings,
                                  group_mappings_by_region,
                                  build_region_index)
+from core.text_doc import is_text_doc
 from utils.term_format import split_by_terms, evidence_chunks
 from utils.errlog import log_exception
 
@@ -549,7 +550,10 @@ def _a_evidence(mappings: list) -> list:
     seen, out = set(), []
     for m in mappings:
         t = (m.extracted_text or "").strip()
-        if not _is_paragraph(t) or t in seen:
+        if not t or t in seen:
+            continue
+        # 텍스트 문서는 도면 캡처가 없으므로 짧아도 여기서 보여줘야 한다
+        if not _is_paragraph(t) and not is_text_doc(m.doc_path):
             continue
         seen.add(t)
         out.append(m)
@@ -564,6 +568,9 @@ def _a_figure_groups(mappings: list) -> list:
     """
     out = []
     for members in group_mappings_by_region(mappings).values():
+        # 붙여넣은 텍스트 문서에는 도면이 없다
+        if any(is_text_doc(m.doc_path) for m in members):
+            continue
         if not any(_is_paragraph(m.extracted_text) for m in members):
             out.append(members)
     return out
@@ -648,10 +655,11 @@ def _type_a_slide(prs, claim: Claim, mappings: list, doc_label: str,
                   "구성요소가 없습니다.", size=18.75, color=MUTED)
 
         # ── 우: 도면 → 명세서 문단 → 분석 의견
-        _a_draw_right(s, page_blocks, terms, colors)
+        _a_draw_right(s, page_blocks, terms, colors, page_index=pno)
 
 
-def _a_draw_right(s, blocks: list, terms: list, colors: dict):
+def _a_draw_right(s, blocks: list, terms: list, colors: dict,
+                  page_index: int = 0):
     """우측 블록들을 순서대로 그린다."""
     y = _A_BODY_TOP + 0.18
     para_label_done = False
@@ -673,7 +681,8 @@ def _a_draw_right(s, blocks: list, terms: list, colors: dict):
             if not para_label_done:
                 _hairline(s, _A_R, y - 0.14, _A_RW)
                 label = "명세서 대응 부분"
-                if i == 0:      # 페이지가 넘어와 이어지는 경우
+                # 앞 페이지에서 문단이 이어져 넘어온 경우에만 (계속)
+                if i == 0 and page_index > 0:
                     label += " (계속)"
                 _text(s, _A_R, y, 5.0, 0.34, label,
                       size=18, bold=True, color=DEEP, condensed=True)
