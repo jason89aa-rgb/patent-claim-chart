@@ -6,6 +6,7 @@ from openpyxl.styles import (Font, PatternFill, Alignment, Border, Side,
 from openpyxl.utils import get_column_letter
 
 from core.project import ProjectData
+from core.claim_scope import scope_elements, scope_mappings
 from core.region_capture import (capture_for_mappings,
                                  group_mappings_by_region,
                                  build_region_index)
@@ -186,8 +187,11 @@ def export_excel(data: ProjectData, output_path: str) -> bool:
             for i, w in enumerate(widths, start=1):
                 ws.column_dimensions[get_column_letter(i)].width = w
 
-            claim_maps = [m for m in data.mappings
-                          if m.claim_number == claim.claim_number]
+            # 종속항은 인용항 구성요소까지 대비 대상 (All Elements Rule)
+            inherit = getattr(data, "inherit_dependent", True)
+            claim_scope = scope_elements(claim, data.claims, inherit)
+            claim_maps = scope_mappings(claim, data.claims, data.mappings,
+                                        inherit)
             by_elem: dict = {}
             for m in claim_maps:
                 by_elem.setdefault(m.element_id, []).append(m)
@@ -199,7 +203,8 @@ def export_excel(data: ProjectData, output_path: str) -> bool:
             top_wrap = Alignment(wrap_text=True, vertical="top")
             row = 2
 
-            for elem in claim.elements:
+            for scope_item in claim_scope:
+                elem = scope_item.element
                 elem_maps = by_elem.get(elem.element_id, [])
                 regions = list(group_mappings_by_region(elem_maps).values()) \
                     or [[]]
@@ -212,9 +217,14 @@ def export_excel(data: ProjectData, output_path: str) -> bool:
                 elem_font = Font(name="맑은 고딕", bold=True,
                                  color=txt_hex, size=10)
 
+                # 상속 구성요소는 어느 항에서 왔는지 함께 적는다
+                id_text = elem.element_id
+                if scope_item.inherited:
+                    id_text += f"\n({scope_item.source_claim}항 인용)"
+
                 for idx, region_maps in enumerate(regions):
                     _apply_cell(ws, row, 1,
-                                elem.element_id if idx == 0 else "〃",
+                                id_text if idx == 0 else "〃",
                                 font=elem_font, fill=elem_fill,
                                 alignment=Alignment(horizontal="center",
                                                     vertical="top"))

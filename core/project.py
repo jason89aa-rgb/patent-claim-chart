@@ -86,6 +86,8 @@ class ProjectData:
     terms: list[ClaimTerm] = field(default_factory=list)
     mappings: list[MappingEntry] = field(default_factory=list)
     doc_paths: list[str] = field(default_factory=list)
+    # 종속항 대비표에 인용항 구성요소를 함께 실을지 (All Elements Rule)
+    inherit_dependent: bool = True
     created_at: float = field(default_factory=time.time)
     modified_at: float = field(default_factory=time.time)
 
@@ -230,6 +232,7 @@ class ProjectManager:
             terms=terms,
             mappings=mappings,
             doc_paths=raw.get("doc_paths", []),
+            inherit_dependent=raw.get("inherit_dependent", True),
             created_at=raw.get("created_at", time.time()),
             modified_at=raw.get("modified_at", time.time()),
         )

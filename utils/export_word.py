@@ -8,6 +8,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 from core.project import ProjectData
+from core.claim_scope import scope_elements, scope_mappings
 from core.region_capture import (capture_for_mappings,
                                  group_mappings_by_region,
                                  build_region_index)
@@ -262,8 +263,12 @@ def export_word(data: ProjectData, output_path: str,
             table.alignment = WD_TABLE_ALIGNMENT.CENTER
             _add_header_row(table, headers, col_widths)
 
-            claim_maps = [m for m in data.mappings
-                          if m.claim_number == claim.claim_number]
+            # 종속항은 인용항 구성요소까지 대비 대상 (All Elements Rule).
+            # 매핑은 원래 청구항 번호로 저장되므로 구성요소 ID로 고른다.
+            inherit = getattr(data, "inherit_dependent", True)
+            claim_scope = scope_elements(claim, data.claims, inherit)
+            claim_maps = scope_mappings(claim, data.claims, data.mappings,
+                                        inherit)
             by_elem: dict[str, list] = {}
             for m in claim_maps:
                 by_elem.setdefault(m.element_id, []).append(m)
@@ -271,7 +276,8 @@ def export_word(data: ProjectData, output_path: str,
             region_index = build_region_index(claim_maps)
             rendered_groups: set = set()
 
-            for elem in claim.elements:
+            for scope_item in claim_scope:
+                elem = scope_item.element
                 elem_maps = by_elem.get(elem.element_id, [])
                 # 같은 영역(도면/문장)에 걸린 매핑끼리 묶어 한 행으로
                 regions = list(group_mappings_by_region(elem_maps).values()) \
@@ -292,8 +298,12 @@ def export_word(data: ProjectData, output_path: str,
                     # 구성요소
                     cell_id = row.cells[0]
                     _set_cell_bg(cell_id, bg_hex)
+                    # 상속 구성요소는 어느 항에서 왔는지 함께 적는다
+                    id_text = elem.element_id
+                    if scope_item.inherited:
+                        id_text += f" ({scope_item.source_claim}항 인용)"
                     _set_cell_font(cell_id,
-                                   elem.element_id if idx == 0 else "〃",
+                                   id_text if idx == 0 else "〃",
                                    font_size=10, bold=True, color=txt_color,
                                    align=WD_ALIGN_PARAGRAPH.CENTER)
                     cell_id.vertical_alignment = WD_ALIGN_VERTICAL.CENTER

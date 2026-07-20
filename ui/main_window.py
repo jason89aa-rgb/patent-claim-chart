@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.status_label)
 
     def _setup_mapping_dock(self):
-        dock = QDockWidget("매핑 / 커버리지", self)
+        dock = self.mapping_dock = QDockWidget("매핑 / 커버리지", self)
         dock.setAllowedAreas(
             Qt.DockWidgetArea.BottomDockWidgetArea |
             Qt.DockWidgetArea.RightDockWidgetArea)
@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
 
         self.coverage_panel = CoveragePanel()
         self.coverage_panel.jump_requested.connect(self._jump_to_mapping)
+        self.coverage_panel.inherit_changed.connect(self._on_panel_inherit)
 
         self.bottom_tabs = QTabWidget()
         self.bottom_tabs.addTab(self.mapping_list_panel, "매핑 목록")
@@ -179,6 +180,24 @@ class MainWindow(QMainWindow):
         edit_menu = mb.addMenu("편집(&E)")
         self._add_action(edit_menu, "실행 취소", self._undo, "Ctrl+Z")
         self._add_action(edit_menu, "다시 실행", self._redo, "Ctrl+Y")
+        edit_menu.addSeparator()
+
+        self.inherit_action = QAction("종속항에 인용항 구성요소 포함", self)
+        self.inherit_action.setCheckable(True)
+        self.inherit_action.setChecked(True)
+        self.inherit_action.setStatusTip(
+            "종속항은 인용항의 모든 구성요소를 포함합니다. "
+            "켜면 대비표·커버리지·내보내기에 인용항 구성요소가 함께 실립니다.")
+        self.inherit_action.toggled.connect(self._toggle_inherit)
+        edit_menu.addAction(self.inherit_action)
+
+        self.lint_action = QAction("내보내기 전 점검", self)
+        self.lint_action.setCheckable(True)
+        self.lint_action.setChecked(True)
+        self.lint_action.setStatusTip(
+            "내보내기 직전에 미대응 구성요소·빈 논거 등을 검사합니다.")
+        self.lint_action.toggled.connect(self._toggle_lint)
+        edit_menu.addAction(self.lint_action)
 
         # 선행문헌
         doc_menu = mb.addMenu("선행문헌(&D)")
@@ -200,6 +219,12 @@ class MainWindow(QMainWindow):
 
         # 보기
         view_menu = mb.addMenu("보기(&V)")
+        self.dock_action = self.mapping_dock.toggleViewAction()
+        self.dock_action.setText("매핑 / 커버리지 패널")
+        view_menu.addAction(self.dock_action)
+        self._add_action(view_menu, "커버리지 갭 보기",
+                         self._show_coverage_tab)
+        view_menu.addSeparator()
         self._add_action(view_menu, "다크모드 전환", self._toggle_theme)
 
         # 도움말
@@ -268,6 +293,12 @@ class MainWindow(QMainWindow):
 
     def _sync_ui_from_data(self):
         """프로젝트 데이터 → UI 동기화."""
+        inherit = getattr(self._pm.data, "inherit_dependent", True)
+        if hasattr(self, "inherit_action"):
+            self.inherit_action.blockSignals(True)
+            self.inherit_action.setChecked(inherit)
+            self.inherit_action.blockSignals(False)
+            self.coverage_panel.set_inherit(inherit)
         self.claim_editor.set_terms(self._pm.data.terms)
         self.claim_editor.load_claims(self._pm.data.claims)
         self.case_info_panel.load(self._pm.data.case_info)
@@ -671,6 +702,38 @@ class MainWindow(QMainWindow):
         # 그래도 못 찾으면 타임스탬프
         import time
         return f"{base} {int(time.time())}{ext}"
+
+    def _toggle_inherit(self, on: bool):
+        """종속항에 인용항 구성요소를 포함할지 전환."""
+        self._pm.data.inherit_dependent = on
+        self._pm.mark_dirty()
+        if hasattr(self, "coverage_panel"):
+            self.coverage_panel.set_inherit(on)
+        self._refresh_mapping_panel()
+        self.status_label.setText(
+            "종속항에 인용항 구성요소를 포함합니다" if on
+            else "종속항은 자기 구성요소만 표시합니다")
+
+    def _on_panel_inherit(self, on: bool):
+        """커버리지 패널의 체크박스로 바꾼 경우 메뉴·프로젝트에 반영."""
+        self._pm.data.inherit_dependent = on
+        self._pm.mark_dirty()
+        if self.inherit_action.isChecked() != on:
+            self.inherit_action.blockSignals(True)
+            self.inherit_action.setChecked(on)
+            self.inherit_action.blockSignals(False)
+
+    def _toggle_lint(self, on: bool):
+        self._skip_lint = not on
+        self.status_label.setText(
+            "내보내기 전 점검을 사용합니다" if on
+            else "내보내기 전 점검을 건너뜁니다")
+
+    def _show_coverage_tab(self):
+        """커버리지 갭 패널을 열고 앞으로 가져온다."""
+        self.mapping_dock.show()
+        self.mapping_dock.raise_()
+        self.bottom_tabs.setCurrentWidget(self.coverage_panel)
 
     def _lint_gate(self, target: str) -> bool:
         """내보내기 전 점검. 계속 진행하면 True."""

@@ -45,6 +45,7 @@ def doc_label(path: str) -> str:
 class CoveragePanel(QWidget):
     """구성요소 × 문헌 커버리지 매트릭스."""
     jump_requested = pyqtSignal(str, int, list)   # doc_path, page, rect
+    inherit_changed = pyqtSignal(bool)            # 상속 표시 on/off
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,7 +68,7 @@ class CoveragePanel(QWidget):
             "종속항은 인용항의 모든 구성요소를 포함합니다.\n"
             "켜두면 인용항 구성요소가 종속항 행에도 나타나고,\n"
             "독립항에 붙인 매핑이 그대로 표시됩니다 (매핑 복제 없음).")
-        self.inherit_check.stateChanged.connect(self._rebuild)
+        self.inherit_check.toggled.connect(self._on_inherit_toggled)
         head.addWidget(self.inherit_check)
 
         self.gap_only_check = QCheckBox("갭만 보기")
@@ -221,6 +222,19 @@ class CoveragePanel(QWidget):
                 "color: #1B683E; font-weight: bold;")
 
     # ------------------------------------------------------------ 상호작용
+
+    def _on_inherit_toggled(self, on: bool):
+        self._rebuild()
+        self.inherit_changed.emit(on)
+
+    def set_inherit(self, on: bool):
+        """메뉴 쪽에서 바뀐 설정을 반영 (되돌아오는 신호는 막는다)."""
+        if self.inherit_check.isChecked() == on:
+            return
+        self.inherit_check.blockSignals(True)
+        self.inherit_check.setChecked(on)
+        self.inherit_check.blockSignals(False)
+        self._rebuild()
 
     def _on_cell_clicked(self, row: int, col: int):
         maps = self._cells.get((row, col))

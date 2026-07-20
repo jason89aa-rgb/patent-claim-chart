@@ -21,6 +21,7 @@ from core.project import ProjectData, CaseInfo, Claim, MappingEntry
 from core.region_capture import (capture_for_mappings,
                                  group_mappings_by_region,
                                  build_region_index)
+from core.claim_scope import ScopeElement, scope_elements, scope_mappings
 from core.text_doc import is_text_doc
 from utils.term_format import split_by_terms, evidence_chunks
 from utils.errlog import log_exception
@@ -515,20 +516,24 @@ def _wrap_h(text: str, width_in: float, size: float,
     return lines * line_h
 
 
-def _a_elements(claim: Claim, mappings: list) -> list:
-    """좌측에 쌓을 구성요소 항목 (요소 ID + 판단 + 문언)."""
-    by_elem: dict = {}
-    for m in mappings:
-        by_elem.setdefault(m.element_id, []).append(m)
+def _a_elements(claim: Claim, mappings: list, scope: list = None) -> list:
+    """좌측에 쌓을 구성요소 항목.
 
+    종속항이면 인용항 구성요소도 함께 실린다(scope). 상속분은 어느 항에서
+    왔는지 작은 머리말로 표시해 자기 한정과 구분한다.
+    """
     items = []
-    for elem in claim.elements:
+    for item in (scope or [ScopeElement(e, claim.claim_number)
+                           for e in claim.elements]):
+        elem = item.element
         # 요소 번호(1A…)와 판단 칩은 표시하지 않는다 — 청구항 문언에
         # 지면을 최대한 내주기 위함 (판단은 카드 헤더의 종합 배지로 표시)
-        items.append({
-            "elem": elem,
-            "h": _wrap_h(elem.text, _A_LW, 18) + 0.26,
-        })
+        h = _wrap_h(elem.text, _A_LW, 18) + 0.26
+        if item.inherited:
+            h += 0.26
+        items.append({"elem": elem, "h": h,
+                      "inherited": item.inherited,
+                      "source_claim": item.source_claim})
     return items
 
 
@@ -617,7 +622,7 @@ def _right_extra(block: dict, cur: list) -> float:
 
 def _type_a_slide(prs, claim: Claim, mappings: list, doc_label: str,
                   terms: list, colors: dict, verdict=None,
-                  note: str = ""):
+                  note: str = "", scope: list = None):
     """청구항(좌) × 선행문헌(우) 대비.
 
     우측은 구성요소별로 칸을 나누지 않고, 도면을 맨 위에 모아 배치한 뒤
@@ -625,7 +630,7 @@ def _type_a_slide(prs, claim: Claim, mappings: list, doc_label: str,
     좌/우 각각 넘치면 페이지를 늘린다 (내용이 잘리지 않도록).
     """
     avail = _A_BODY_BOT - (_A_BODY_TOP + 0.18)
-    left_pages = _paginate(_a_elements(claim, mappings), avail)
+    left_pages = _paginate(_a_elements(claim, mappings, scope), avail)
     right_pages = _paginate(
         _a_right_blocks(_a_figure_groups(mappings),
                         _a_evidence(mappings), note),
@@ -647,7 +652,14 @@ def _type_a_slide(prs, claim: Claim, mappings: list, doc_label: str,
         # ── 좌: 구성요소 (칸 분할 없이 세로로 쌓기)
         y = _A_BODY_TOP + 0.18
         for it in page_items:
-            _rich(s, _A_L, y, _A_LW, it["h"] - 0.26,
+            top = y
+            if it.get("inherited"):
+                _text(s, _A_L, top, _A_LW, 0.24,
+                      f"{it['source_claim']}항 인용", size=13.5,
+                      color=MUTED, condensed=True, wrap=False)
+                top += 0.26
+            _rich(s, _A_L, top, _A_LW,
+                  it["h"] - 0.26 - (0.26 if it.get("inherited") else 0),
                   split_by_terms(it["elem"].text, terms), size=18)
             y += it["h"]
         if not page_items and pno == 0:
@@ -706,14 +718,14 @@ def _a_draw_right(s, blocks: list, terms: list, colors: dict,
 
 # ------------------------------------------------------------ Type B
 def _type_b_slide(prs, claim: Claim, mappings: list, doc_label: str,
-                  terms: list, colors: dict):
+                  terms: list, colors: dict, scope: list = None):
     """구성요소 1개당 슬라이드 1장 — 도면을 크게."""
     by_elem: dict = {}
     for m in mappings:
         by_elem.setdefault(m.element_id, []).append(m)
     region_index = build_region_index(mappings)
 
-    for elem in claim.elements:
+    for elem in [it.element for it in (scope or [])] or claim.elements:
         elem_maps = by_elem.get(elem.element_id, [])
         s = _slide(prs)
         _text(s, 0.83, 0.52, 14.0, 0.43,
@@ -783,7 +795,7 @@ def _type_b_slide(prs, claim: Claim, mappings: list, doc_label: str,
 
 # ------------------------------------------------------------ Type C
 def _type_c_slide(prs, claim: Claim, all_mappings: list, doc_paths: list,
-                  terms: list):
+                  terms: list, scope: list = None):
     """구성요소 × 선행문헌 대응 매트릭스."""
     s = _slide(prs)
     _header(s, "대응 현황 요약",
@@ -791,7 +803,8 @@ def _type_c_slide(prs, claim: Claim, all_mappings: list, doc_paths: list,
 
     labels = [_doc_label(p) for p in doc_paths] or ["선행문헌"]
     n = len(labels)
-    n_rows = max(len(claim.elements), 1)
+    elems = [it.element for it in (scope or [])] or list(claim.elements)
+    n_rows = max(len(elems), 1)
     # 본문은 2.90에서 시작(헤더 0.67 + 여백 0.15)하므로 그만큼 더해야
     # 마지막 행이 잘리지 않는다.
     card_h = min(8.3, 0.82 + 0.86 * n_rows + 0.10)
@@ -815,7 +828,7 @@ def _type_c_slide(prs, claim: Claim, all_mappings: list, doc_paths: list,
     _hairline(s, 0.84, 2.76, 18.32)
 
     y = 2.90
-    for elem in claim.elements:
+    for elem in elems:
         if y + 0.86 > 2.08 + card_h:
             break
         _text(s, elem_x, y + 0.06, 1.0, 0.49, elem.element_id,
@@ -868,11 +881,15 @@ def _summary_slide(prs, data: ProjectData):
         col, row = i % 2, i // 2
         x = 0.83 + col * (col_w + gap)
         y = 2.13 + row * 2.55
-        maps = [m for m in data.mappings
-                if m.claim_number == claim.claim_number]
+        # 종합도 상속 구성요소를 포함해 센다 (종속항이 자기 한정만으로
+        # 전 구성요소 대응으로 보이면 안 된다)
+        inherit = getattr(data, "inherit_dependent", True)
+        scope_ids = {it.element_id
+                     for it in scope_elements(claim, data.claims, inherit)}
+        maps = scope_mappings(claim, data.claims, data.mappings, inherit)
         mapped = {m.element_id for m in maps}
-        total = len(claim.elements)
-        done = len(mapped & {e.element_id for e in claim.elements})
+        total = len(scope_ids)
+        done = len(mapped & scope_ids)
         judgments = [m.judgment for m in maps]
         if judgments and all(j == "일치" for j in judgments) and done == total:
             verdict, fg = "전 구성요소 대응", JUDGMENT_STYLE["일치"][0]
@@ -926,21 +943,26 @@ def export_pptx(data: ProjectData, output_path: str,
         if terms:
             _term_legend_slide(prs, terms)
 
+        inherit = getattr(data, "inherit_dependent", True)
         for claim in data.claims:
-            claim_maps = [m for m in data.mappings
-                          if m.claim_number == claim.claim_number]
+            # 종속항은 인용항 구성요소까지 대비 대상이다 (All Elements Rule).
+            # 매핑은 원래 청구항 번호로 저장돼 있으므로 구성요소 ID로 고른다.
+            claim_scope = scope_elements(claim, data.claims, inherit)
+            claim_maps = scope_mappings(claim, data.claims, data.mappings,
+                                        inherit)
             doc_paths = list(dict.fromkeys(
                 m.doc_path for m in claim_maps))
 
             if template_type == "C":
-                _type_c_slide(prs, claim, claim_maps, doc_paths, terms)
+                _type_c_slide(prs, claim, claim_maps, doc_paths, terms,
+                              scope=claim_scope)
                 continue
 
             if template_type == "B":
                 for dp in (doc_paths or [""]):
                     dmaps = [m for m in claim_maps if m.doc_path == dp]
                     _type_b_slide(prs, claim, dmaps, _doc_label(dp),
-                                  terms, colors)
+                                  terms, colors, scope=claim_scope)
                 continue
 
             # Type A: 청구항 하나당 한 장 (선행문헌이 여러 건이어도 합쳐서)
@@ -956,7 +978,8 @@ def export_pptx(data: ProjectData, output_path: str,
             note = " / ".join(
                 dict.fromkeys(m.note for m in claim_maps if m.note))
             _type_a_slide(prs, claim, claim_maps, _docs_label(doc_paths),
-                          terms, colors, verdict=verdict, note=note)
+                          terms, colors, verdict=verdict, note=note,
+                          scope=claim_scope)
 
         if template_type != "C":
             _summary_slide(prs, data)
