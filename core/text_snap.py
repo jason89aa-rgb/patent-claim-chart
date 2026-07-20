@@ -67,6 +67,29 @@ def _column_bounds(words, seed_cx: float, page_rect) -> tuple:
     return page_rect.x0, page_rect.x1
 
 
+def _column_clusters(words, page_rect) -> list:
+    """본문 단어의 x-구간을 합쳐 단(column) 목록을 만든다.
+
+    반환: [(x0, x1), ...] — 왼쪽부터.
+    """
+    top_cut = page_rect.y0 + page_rect.height * 0.08
+    intervals = sorted(
+        (w[0], w[2]) for w in words
+        if w[4].strip() and not w[4].strip().isdigit()
+        and w[1] > top_cut)
+    if not intervals:
+        return []
+    merged = [list(intervals[0])]
+    for a, b in intervals[1:]:
+        if a <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    # 아주 좁은 클러스터(행번호 띠 등)는 버린다
+    width = page_rect.width
+    return [(a, b) for a, b in merged if (b - a) > width * 0.12]
+
+
 def _column_sublines(words, col_x0: float, col_x1: float) -> list:
     """해당 단에 속한 단어만으로 줄(sub-line)들을 재구성.
 
@@ -196,6 +219,75 @@ def _is_region_drag(page, rect: list) -> bool:
     if hr >= 0.30 and wr >= 0.25:
         return True
     return (drag.get_area() / pr.get_area()) >= 0.18
+
+
+# 문장이 끝났다고 볼 종결 부호 (약어 마침표는 아래에서 걸러낸다)
+_SENT_TERM = re.compile(r'[.!?。？！]["\')\]]?\s*$')
+# 문장 끝이 아닌 마침표 (Fig. 7 / No. 2 / U.S. / e.g.)
+_ABBREV_END = re.compile(
+    r'\b(?:Fig|FIG|No|Nos|Pat|Ser|Vol|Inc|Ltd|Co|Corp|et al|e\.g|i\.e|U\.S'
+    r'|Dr|Mr|Ms|approx|cf|vs|[A-Z])\.\s*$')
+
+
+def looks_unfinished(text: str) -> bool:
+    """문단이 아직 안 끝났는지 (다음 장으로 이어지는지) 추정."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _ABBREV_END.search(t):
+        return True
+    return not _SENT_TERM.search(t)
+
+
+def reaches_page_bottom(page, rect: list, margin_ratio: float = 0.12) -> bool:
+    """선택이 페이지 아래쪽 끝에 닿았는지 (본문이 잘렸을 가능성)."""
+    try:
+        page_h = page.rect.height
+        return (page_h - float(rect[3])) <= page_h * margin_ratio
+    except Exception:
+        return False
+
+
+def page_head_text(page, max_chars: int = 600) -> tuple:
+    """페이지 맨 위 본문에서 첫 문장이 끝날 때까지의 텍스트.
+
+    앞 페이지에서 이어지는 문단을 이어붙일 때 쓴다. 상단 머리글
+    (특허번호 띠)과 여백의 행번호는 건너뛴다.
+    반환: (rect, text) — 못 찾으면 (None, "")
+    """
+    if not FITZ_AVAILABLE or page is None:
+        return None, ""
+    try:
+        words = page.get_text("words")
+    except Exception:
+        return None, ""
+
+    page_rect = page.rect
+    head_cut = page_rect.y0 + page_rect.height * 0.08   # 머리글 띠 제외
+    body = [w for w in words
+            if w[4].strip() and w[1] >= head_cut and not w[4].strip().isdigit()]
+    if not body:
+        return None, ""
+
+    # 2단 조판에서 앞 페이지 끝 문단은 다음 페이지 '왼쪽 단 맨 위'로 이어진다.
+    # 첫 줄로 단을 추정하면 좌우를 걸치는 줄에 속아 두 단이 섞이므로,
+    # 단 클러스터를 직접 만들어 가장 왼쪽 단을 쓴다.
+    cols = _column_clusters(words, page_rect)
+    if not cols:
+        return None, ""
+    col_x0, col_x1 = cols[0]
+    sublines = [(r, t) for r, t in _column_sublines(body, col_x0, col_x1)
+                if r.y0 >= head_cut]
+    if not sublines:
+        return None, ""
+
+    picked = []
+    for r, t in sublines:
+        picked.append((r, t))
+        joined = " ".join(x[1] for x in picked)
+        if not looks_unfinished(joined) or len(joined) >= max_chars:
+            break
+    return _finalize(picked)
 
 
 def snap_selection(page, rect: list, mode: str = "sentence") -> tuple:

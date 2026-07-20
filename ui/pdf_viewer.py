@@ -42,7 +42,8 @@ def _page_snippet(page, rect) -> str:
 
 class PageCanvas(QLabel):
     """PDF 단일 페이지 렌더링 + 드래그 선택."""
-    selection_made = pyqtSignal(list, str)
+    # (rect, 추출 텍스트, 이어붙이기 여부[Shift])
+    selection_made = pyqtSignal(list, str, bool)
     right_clicked = pyqtSignal(QPoint, list)
 
     def __init__(self, parent=None):
@@ -239,7 +240,8 @@ class PageCanvas(QLabel):
                     # 안 잡히면(도면) 드래그 영역 그대로 사용
                     if extracted:
                         pdf_rect = snapped
-                self.selection_made.emit(pdf_rect, extracted)
+                append = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                self.selection_made.emit(pdf_rect, extracted, append)
             self._drag_start = None
             self._drag_rect = None
             self._render()
@@ -269,6 +271,7 @@ class DocumentViewer(QWidget):
         self._current_page = 0
         self._scale = 1.5
         self._terms: list = []
+        self._pending = None      # 여러 페이지에 걸친 선택을 모으는 중
         self._setup_ui()
         self._load_document()
 
@@ -328,9 +331,12 @@ class DocumentViewer(QWidget):
         self.snap_combo.addItem("영역 그대로", "none")
         self.snap_combo.setFixedWidth(112)
         self.snap_combo.setToolTip(
-            "문장 단위: 드래그가 문장 일부만 걸쳐도 문장 전체를 가져옵니다\n"
+            "문장 단위: 드래그가 문장 일부만 걸쳐도 문장 전체를 가져옵니다.\n"
+            "  문단이 다음 장으로 이어지면 뒷부분도 자동으로 붙여옵니다.\n"
             "줄 단위: 걸친 줄 전체를 가져옵니다\n"
-            "영역 그대로: 드래그한 영역만 (도면 캡처용)")
+            "영역 그대로: 드래그한 영역만 (도면 캡처용)\n\n"
+            "Shift+드래그: 여러 곳을 이어붙여 하나의 매핑으로 만듭니다\n"
+            "  (페이지를 넘겨가며 계속 이어붙일 수 있습니다)")
         self.snap_combo.currentIndexChanged.connect(
             lambda: self.canvas.set_snap_mode(self.snap_combo.currentData()))
         toolbar.addWidget(self.snap_combo)
@@ -411,6 +417,26 @@ class DocumentViewer(QWidget):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, stretch=1)
+
+        # 여러 페이지에 걸친 문단을 이어붙일 때만 나타나는 띠
+        self.pending_bar = QWidget()
+        pend_lay = QHBoxLayout(self.pending_bar)
+        pend_lay.setContentsMargins(8, 4, 8, 4)
+        self.pending_label = QLabel("")
+        self.pending_label.setStyleSheet("color: #2C455D;")
+        pend_lay.addWidget(self.pending_label, stretch=1)
+        done_btn = QPushButton("이 내용으로 매핑")
+        done_btn.setObjectName("primaryBtn")
+        done_btn.clicked.connect(self._finish_pending)
+        pend_lay.addWidget(done_btn)
+        cancel_btn = QPushButton("취소")
+        cancel_btn.clicked.connect(self._cancel_pending)
+        pend_lay.addWidget(cancel_btn)
+        self.pending_bar.setStyleSheet(
+            "background: #E2F6F5; border: 1px solid #2AC1BC;"
+            "border-radius: 6px;")
+        self.pending_bar.setVisible(False)
+        layout.addWidget(self.pending_bar)
 
     def _load_document(self):
         if not os.path.exists(self.doc_path):
@@ -667,9 +693,90 @@ class DocumentViewer(QWidget):
             self.canvas.set_focus_rect(None)
             if self.canvas is not None else None))
 
-    def _on_selection(self, rect: list, extracted_text: str):
+    def _on_selection(self, rect: list, extracted_text: str,
+                      append: bool = False):
+        """드래그 선택을 매핑 요청으로 넘긴다.
+
+        문단이 다음 장으로 이어지면 한 페이지 안에서는 다 못 긁으므로,
+        (1) 문장이 안 끝난 채 페이지 아래 끝에 닿으면 다음 장 첫 문단을
+            자동으로 이어붙이고,
+        (2) Shift+드래그로 사용자가 직접 이어붙일 수도 있다.
+        """
+        if append and self._pending:
+            self._pending["text"] = (
+                self._pending["text"].rstrip() + " " + extracted_text.strip())
+            self._update_pending_bar()
+            return
+
+        text = extracted_text
+        if text and self.snap_combo.currentData() == "sentence":
+            text = self._extend_across_pages(rect, text)
+
+        if append:      # 이어붙이기 시작 (첫 조각)
+            self._pending = {"page": self._current_page, "rect": list(rect),
+                             "text": text}
+            self._update_pending_bar()
+            return
+
         self.mapping_requested.emit(
-            self.doc_path, self._current_page, rect, extracted_text)
+            self.doc_path, self._current_page, rect, text)
+
+    def _extend_across_pages(self, rect: list, text: str,
+                             max_pages: int = 3) -> str:
+        """문단이 다음 장으로 이어지면 그 뒷부분을 붙여 온다."""
+        from core.text_snap import (looks_unfinished, page_head_text,
+                                    reaches_page_bottom)
+        if not self._doc or self._current_page >= len(self._doc):
+            return text
+        if not looks_unfinished(text):
+            return text
+        try:
+            page = self._doc[self._current_page]
+        except Exception:
+            return text
+        if not reaches_page_bottom(page, rect):
+            return text
+
+        out = text
+        pno = self._current_page
+        for _ in range(max_pages):
+            pno += 1
+            if pno >= len(self._doc):
+                break
+            try:
+                _r, head = page_head_text(self._doc[pno])
+            except Exception:
+                break
+            if not head:
+                break
+            out = out.rstrip() + " " + head.strip()
+            if not looks_unfinished(out):
+                break
+        return out
+
+    # --------------------------------------------- 여러 페이지 이어붙이기
+
+    def _update_pending_bar(self):
+        p = self._pending
+        if not p:
+            self.pending_bar.setVisible(False)
+            return
+        preview = p["text"][:70] + ("…" if len(p["text"]) > 70 else "")
+        self.pending_label.setText(
+            f"이어붙이는 중 ({len(p['text'])}자):  {preview}")
+        self.pending_bar.setVisible(True)
+
+    def _finish_pending(self):
+        p = self._pending
+        self._pending = None
+        self._update_pending_bar()
+        if p and p["text"].strip():
+            self.mapping_requested.emit(
+                self.doc_path, p["page"], p["rect"], p["text"].strip())
+
+    def _cancel_pending(self):
+        self._pending = None
+        self._update_pending_bar()
 
     def update_mappings(self, mappings: list[MappingEntry],
                         element_colors: dict[str, tuple] = None,
