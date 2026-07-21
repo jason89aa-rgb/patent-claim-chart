@@ -269,8 +269,14 @@ def extract_terms_from_claim(claim) -> list[TermCandidate]:
 
 # ---------------------------------------------------------------- 색칠 후보
 
-# 매핑 창의 '자주 나온 단어' 후보 토큰 (도면 부호 VDDL·CNT8·S1_1 포함)
-_CHIP_TOKEN_RE = re.compile(r"[A-Za-z가-힣][A-Za-z0-9_\-가-힣]*")
+# 매핑 창의 '자주 나온 단어' 후보 토큰.
+# 문자로 시작하는 부호(VDDL·CNT8·S1_1)뿐 아니라 순수 숫자 도면부호
+# (130, 20R, 100a)도 잡는다 — 한국 도면은 부호가 대부분 숫자다.
+_CHIP_TOKEN_RE = re.compile(
+    r"[A-Za-z가-힣][A-Za-z0-9_\-가-힣]*|\d{1,4}[A-Za-z가-힣]?")
+
+# 도면부호로 보기 어려운 숫자 (연도·페이지·아주 큰 수)
+_NOT_FIG_NUM = re.compile(r"^(?:1[89]\d{2}|20[0-4]\d)$")   # 1800~2049 = 연도
 
 
 def frequent_words(text: str, terms: list = None, limit: int = 20) -> list:
@@ -309,9 +315,16 @@ def frequent_words(text: str, terms: list = None, limit: int = 20) -> list:
     forms: dict = {}
     for tok in _CHIP_TOKEN_RE.findall(text):
         low = tok.lower()
-        if len(tok) < 2 or low in _STOPWORDS or low in taken:
+        if low in _STOPWORDS or low in taken:
             continue
-        if _HANGUL_RE.search(tok):
+        if tok[0].isdigit():
+            # 도면부호 — 한 자리(1, 2)는 도면 번호일 때가 많아 제외,
+            # 연도로 보이는 값도 제외
+            if len(tok) < 2 or _NOT_FIG_NUM.match(tok):
+                continue
+        elif len(tok) < 2:
+            continue
+        elif _HANGUL_RE.search(tok):
             stem = _ko_noun(tok)          # 조사 떼고 서술부 걸러냄
             if not stem or stem.lower() in taken:
                 continue

@@ -90,6 +90,50 @@ def _column_clusters(words, page_rect) -> list:
     return [(a, b) for a, b in merged if (b - a) > width * 0.12]
 
 
+def _line_number_texts(lines: dict) -> set:
+    """행번호(5, 10, 15 …)로 확신되는 단독 숫자줄만 골라낸다.
+
+    도면부호도 3자리 이하 단독 숫자라 무조건 버리면 130·141·150 같은
+    부호가 통째로 사라진다. 둘은 이렇게 다르다:
+      행번호  — 같은 x대역에 세로로 늘어서고, 아래로 갈수록 값이 커지며
+                대부분 5의 배수 (5, 10, 15 …)
+      도면부호 — 값이 불규칙하고 증가 순서가 아니다 (190, 160, 143 …)
+    두 조건을 모두 만족할 때만 행번호로 본다.
+    """
+    cands = []
+    for ws in lines.values():
+        ws.sort(key=lambda w: w[0])
+        text = " ".join(w[4] for w in ws).strip()
+        if text.isdigit() and len(text) <= 3:
+            cx = (ws[0][0] + ws[-1][2]) / 2.0
+            cands.append((cx, ws[0][1], text))
+    if len(cands) < 4:
+        return set()
+
+    # x가 비슷한 것끼리 묶는다 (행번호는 한 줄로 정렬된다)
+    out = set()
+    cands.sort()
+    band, bands = [cands[0]], []
+    for c in cands[1:]:
+        if abs(c[0] - band[-1][0]) <= 6.0:
+            band.append(c)
+        else:
+            bands.append(band)
+            band = [c]
+    bands.append(band)
+
+    for band in bands:
+        if len(band) < 4:
+            continue
+        band.sort(key=lambda c: c[1])          # 위 → 아래
+        vals = [int(c[2]) for c in band]
+        increasing = all(b > a for a, b in zip(vals, vals[1:]))
+        mult5 = sum(1 for v in vals if v % 5 == 0) >= len(vals) * 0.8
+        if increasing and mult5:
+            out.update(c[2] for c in band)
+    return out
+
+
 def _column_sublines(words, col_x0: float, col_x1: float) -> list:
     """해당 단에 속한 단어만으로 줄(sub-line)들을 재구성.
 
@@ -106,12 +150,15 @@ def _column_sublines(words, col_x0: float, col_x1: float) -> list:
             continue
         lines.setdefault((w[5], w[6]), []).append(w)
 
+    # 행번호로 확신되는 것만 제외한다 (도면부호는 살린다)
+    line_nums = _line_number_texts(lines)
+
     sublines = []
     for ws in lines.values():
         ws.sort(key=lambda w: w[0])
         text = " ".join(w[4] for w in ws).strip()
-        if not text or (text.isdigit() and len(text) <= 3):
-            continue      # 행번호/페이지번호
+        if not text or text in line_nums:
+            continue
         r = fitz.Rect(ws[0][0], ws[0][1], ws[0][2], ws[0][3])
         for w in ws[1:]:
             r |= fitz.Rect(w[0], w[1], w[2], w[3])
